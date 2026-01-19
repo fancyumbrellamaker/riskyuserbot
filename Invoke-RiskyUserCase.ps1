@@ -440,7 +440,7 @@ if ($anchor) {
     $AnchorDevice | Format-List
     
     # Timezone Conversions (Force UTC source)
-    $utcTime = $anchor.EventTime
+    $utcTime = if ($anchor.EventTime) { $anchor.EventTime } else { Get-Date }
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
     
