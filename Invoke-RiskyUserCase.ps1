@@ -245,6 +245,17 @@ if ($foundFiles.Count -eq 0) {
             if ($raw.Count -gt 50000) {
                 $designFlaws += "DF13 TooManyEventsTruncated ($($file.Name): $($raw.Count) rows)"
             }
+
+            # DF15 MixedTenantNoise
+            $tenantIds = $raw | ForEach-Object { Get-Value -Row $_ -ColumnName "Home tenant ID" } | Where-Object { $_ }
+            if ($tenantIds) {
+                $tenantGroups = $tenantIds | Group-Object
+                if ($tenantGroups.Count -gt 1) {
+                    $topTenants = $tenantGroups | Sort-Object Count -Descending | Select-Object -First 5 | ForEach-Object { "$($_.Name) ($($_.Count))" }
+                    $designFlaws += "DF15 MixedTenantNoise ($($file.Name): $($topTenants -join ', '))"
+                }
+            }
+
             # Store normalized data for datasets
             $data[$file.Name] = $normalized
             Write-Host "Loaded: $($file.Name) ($($raw.Count) rows)"
@@ -455,6 +466,9 @@ if ($designFlaws.Count -gt 0) {
     }
     if ($uniqueFlaws -match "DF14") {
         Write-Host "HINT: Duplicate or blank headers detected. Check the first row of the CSV file for errors."
+    }
+    if ($uniqueFlaws -match "DF15") {
+        Write-Host "HINT: Multiple tenant IDs detected. This investigation may contain data from different environments or guest accounts."
     }
 } else {
     Write-Host "None"
