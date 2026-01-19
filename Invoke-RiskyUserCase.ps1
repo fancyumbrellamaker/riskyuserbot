@@ -228,6 +228,28 @@ function Get-Frequency {
     return $total
 }
 
+function Get-LastSeen {
+    param(
+        [string]$Value, 
+        [string[]]$Aliases, 
+        $Datasets
+    )
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -eq "Unknown") { return "N/A" }
+    $latest = $null
+    foreach ($set in $Datasets) {
+        if ($null -ne $set) {
+            $match = $set | Where-Object { 
+                $v = Get-FieldValue -Row $_ -Aliases $Aliases
+                $v -ieq $Value 
+            } | Sort-Object EventTime -Descending | Select-Object -First 1
+            if ($match -and $match.EventTime -and ($null -eq $latest -or $match.EventTime -gt $latest)) {
+                $latest = $match.EventTime
+            }
+        }
+    }
+    return if ($latest) { $latest.ToString("yyyy-MM-dd HH:mm") } else { "Never" }
+}
+
 function Build-TicketStory {
     param(
         [Parameter(Mandatory=$true)] $Anchor,
@@ -967,6 +989,7 @@ if ($anchor) {
                 <tr>
                     <th>Attribute</th>
                     <th>Anchor Value</th>
+                    <th>Last Seen (Global)</th>
                     <th style="text-align:center">24h Freq</th>
                     <th style="text-align:center">7d Freq</th>
                     <th style="text-align:center">30d Freq</th>
@@ -976,6 +999,7 @@ if ($anchor) {
                 <tr>
                     <td>Device ID</td>
                     <td class="val-col">$($AnchorDevice.DeviceId)</td>
+                    <td style="font-size:11px;">$(Get-LastSeen -Value $AnchorDevice.DeviceId -Aliases $ColumnAliases["DeviceId"] -Datasets @($set24h, $set7d, $set30d))</td>
                     <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.DeviceId -Aliases $ColumnAliases["DeviceId"] -Datasets $set24h)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.DeviceId -Aliases $ColumnAliases["DeviceId"] -Datasets $set7d)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.DeviceId -Aliases $ColumnAliases["DeviceId"] -Datasets $set30d)</td>
@@ -983,6 +1007,7 @@ if ($anchor) {
                 <tr>
                     <td>IP Address</td>
                     <td class="val-col">$($anchor.IPAddress)</td>
+                    <td style="font-size:11px;">$(Get-LastSeen -Value $anchor.IPAddress -Aliases @("IP address") -Datasets @($set24h, $set7d, $set30d))</td>
                     <td class="freq-cell">$(Get-Frequency -Value $anchor.IPAddress -Aliases @("IP address") -Datasets $set24h)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $anchor.IPAddress -Aliases @("IP address") -Datasets $set7d)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $anchor.IPAddress -Aliases @("IP address") -Datasets $set30d)</td>
@@ -990,6 +1015,7 @@ if ($anchor) {
                 <tr>
                     <td>Location</td>
                     <td class="val-col">$($anchor.Location)</td>
+                    <td style="font-size:11px;">$(Get-LastSeen -Value $anchor.Location -Aliases @("Location") -Datasets @($set24h, $set7d, $set30d))</td>
                     <td class="freq-cell">$(Get-Frequency -Value $anchor.Location -Aliases @("Location") -Datasets $set24h)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $anchor.Location -Aliases @("Location") -Datasets $set7d)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $anchor.Location -Aliases @("Location") -Datasets $set30d)</td>
@@ -997,6 +1023,7 @@ if ($anchor) {
                 <tr>
                     <td>Application</td>
                     <td class="val-col">$($anchor.Application)</td>
+                    <td style="font-size:11px;">$(Get-LastSeen -Value $anchor.Application -Aliases @("Application") -Datasets @($set24h, $set7d, $set30d))</td>
                     <td class="freq-cell">$(Get-Frequency -Value $anchor.Application -Aliases @("Application") -Datasets $set24h)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $anchor.Application -Aliases @("Application") -Datasets $set7d)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $anchor.Application -Aliases @("Application") -Datasets $set30d)</td>
@@ -1004,6 +1031,7 @@ if ($anchor) {
                 <tr>
                     <td>User Agent</td>
                     <td class="val-col">$(if($AnchorDevice.UserAgent.Length -gt 30){$AnchorDevice.UserAgent.Substring(0,30) + "..."}else{$AnchorDevice.UserAgent})</td>
+                    <td style="font-size:11px;">$(Get-LastSeen -Value $AnchorDevice.UserAgent -Aliases $ColumnAliases["UserAgent"] -Datasets @($set24h, $set7d, $set30d))</td>
                     <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.UserAgent -Aliases $ColumnAliases["UserAgent"] -Datasets $set24h)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.UserAgent -Aliases $ColumnAliases["UserAgent"] -Datasets $set7d)</td>
                     <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.UserAgent -Aliases $ColumnAliases["UserAgent"] -Datasets $set30d)</td>
