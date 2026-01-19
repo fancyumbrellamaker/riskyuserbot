@@ -119,6 +119,18 @@ function Build-TicketStory {
     return ($parts -join " ")
 }
 
+function Test-Columns {
+    param($RawData, $RequiredCols, $DatasetName)
+    if ($null -eq $RawData -or $RawData.Count -eq 0) { return }
+    $headers = $RawData[0].PSObject.Properties.Name
+    $missing = $RequiredCols | Where-Object { $_ -notin $headers }
+    if ($missing) {
+        $script:designFlaws += "DF03 MissingColumns ($DatasetName)"
+        Write-Host "ERROR: Dataset '$DatasetName' missing columns: $($missing -join ', ')"
+        Write-Host "Available headers (first 30): $($($headers | Select-Object -First 30) -join ', ')"
+    }
+}
+
 # -------------------------
 # Main
 # -------------------------
@@ -151,6 +163,15 @@ if ($foundFiles.Count -eq 0) {
     foreach ($file in $foundFiles) {
         try {
             $raw = Import-Csv $file.FullName -ErrorAction Stop
+            
+            # DF03 Column Validation
+            if ($file.Name -match "InteractiveSignIns" -and $file.Name -notmatch "AuthDetails") {
+                Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
+            }
+            elseif ($file.Name -match "NonInteractive") {
+                Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date (UTC)", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
+            }
+
             if ($null -eq $raw -or $raw.Count -eq 0) {
                 $designFlaws += "DF02 EmptyDataset ($($file.Name))"
             }
