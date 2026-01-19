@@ -197,7 +197,21 @@ if ($foundFiles.Count -eq 0) {
             
             if ($file.Name -match "AuthDetails") { $presence["AuthDetails"] = $true }
             elseif ($file.Name -match "NonInteractive") { $presence["NonInteractive"] = $true }
-            elseif ($file.Name -match "InteractiveSignIns") { $presence["Interactive"] = $true }
+            elseif ($file.Name -match "InteractiveSignIns") { 
+                $presence["Interactive"] = $true
+                # DF06 Join Rate Check
+                $authKey = $file.Name.Replace("InteractiveSignIns", "InteractiveSignIns_AuthDetails")
+                if (Test-Path (Join-Path $CaseFolder $authKey)) {
+                    $authRaw = Import-Csv (Join-Path $CaseFolder $authKey)
+                    $ids = $raw | Select-Object -ExpandProperty "Request ID" -Unique
+                    $authIds = $authRaw | Select-Object -ExpandProperty "Request ID" -Unique
+                    $matches = $ids | Where-Object { $_ -in $authIds }
+                    $rate = if ($ids.Count -gt 0) { ($matches.Count / $ids.Count) * 100 } else { 0 }
+                    if ($rate -lt 20) {
+                        $designFlaws += "DF06 JoinRateLow ($($file.Name): $([math]::Round($rate))%)"
+                    }
+                }
+            }
             elseif ($file.Name -match "AppSignIns") { $presence["AppSignIns"] = $true }
             elseif ($file.Name -match "MSISignIns") { $presence["MSISignIns"] = $true }
         } catch {
@@ -287,6 +301,9 @@ if ($designFlaws.Count -gt 0) {
     $designFlaws | Select-Object -Unique | ForEach-Object { Write-Host $_ }
     if ($designFlaws -contains "DF01 MissingFiles") {
         Write-Host "HINT: Export sign-in logs CSVs and place them in the CaseFolder."
+    }
+    if ($designFlaws -match "DF06") {
+        Write-Host "HINT: Join rate is low. Re-export both CSVs ensuring the same Time Range and Filters (e.g. User or Request ID) are applied to both Sign-ins and AuthDetails."
     }
 } else {
     Write-Host "None"
