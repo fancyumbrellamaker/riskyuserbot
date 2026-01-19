@@ -151,6 +151,9 @@ if ($foundFiles.Count -eq 0) {
     foreach ($file in $foundFiles) {
         try {
             $raw = Import-Csv $file.FullName -ErrorAction Stop
+            if ($null -eq $raw -or $raw.Count -eq 0) {
+                $designFlaws += "DF02 EmptyDataset ($($file.Name))"
+            }
             # Store normalized data for datasets
             $normalized = $raw | ForEach-Object { Normalize-Row $_ }
             $data[$file.Name] = $normalized
