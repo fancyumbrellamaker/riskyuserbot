@@ -477,9 +477,9 @@ if ($anchor) {
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
 
-    # Generate Epochs for Tool URLs (+/- 2 hours)
-    $startTime = $utcTime.AddHours(-2)
-    $endTime   = $utcTime.AddHours(2)
+    # Generate Epochs for Tool URLs (+/- 12 hours for 24h scope)
+    $startTime = $utcTime.AddHours(-12)
+    $endTime   = $utcTime.AddHours(12)
     $fromMs    = [long]([datetimeoffset]::new($startTime).ToUnixTimeMilliseconds())
     $toMs      = [long]([datetimeoffset]::new($endTime).ToUnixTimeMilliseconds())
     $fromSec   = [datetimeoffset]::new($startTime).ToUnixTimeSeconds()
@@ -1002,7 +1002,7 @@ if ($anchor) {
             <div class="card">
                 <span class="label">CrowdStrike EDR (Timeline)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://falcon.us-2.crowdstrike.com/investigate/events/en-US/app/eactums/default?computer_name=$($AnchorDevice.DeviceId)&earliest=$fromSec&latest=$toSec" target="_blank" style="background:var(--red); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Host Storyline (+/- 2h)</a>
+                    <a href="https://falcon.us-2.crowdstrike.com/investigate/events/en-US/app/eactums/default?computer_name=$($AnchorDevice.DeviceId)&earliest=$fromSec&latest=$toSec" target="_blank" style="background:var(--red); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Host Storyline (+/- 12h)</a>
                 </div>
             </div>
             <div class="card">
@@ -1026,7 +1026,7 @@ if ($anchor) {
             <div class="card">
                 <span class="label">Rapid7 Audit Path</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)&from=$fromMs&to=$toMs" target="_blank" style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Azure Ingress (+/- 2h)</a>
+                    <a href="https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)&from=$fromMs&to=$toMs" target="_blank" style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Azure Ingress (+/- 12h)</a>
                 </div>
             </div>
         </div>
