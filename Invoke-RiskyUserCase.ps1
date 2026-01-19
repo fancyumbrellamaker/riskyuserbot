@@ -278,6 +278,12 @@ if ([string]::IsNullOrWhiteSpace($AnchorRequestId)) {
 if ($anchor) {
     $anchor | Format-List EventTime, Username, IPAddress, Location, Application, Status, ConditionalAccess, MfaResult, RequestId
     
+    # Dataset Time Windows
+    Write-Host "`nDataset Time Windows:"
+    foreach ($key in $minMax.Keys | Sort-Object) {
+        Write-Host "  $key`: $($minMax[$key].Min.ToString('yyyy-MM-dd')) to $($minMax[$key].Max.ToString('yyyy-MM-dd'))"
+    }
+    
     # DF07 UserMismatch
     $baselineUsers = @()
     if ($data.ContainsKey("InteractiveSignIns_7d.csv")) { 
@@ -293,6 +299,30 @@ if ($anchor) {
         $uniqueBaselineUsers = $baselineUsers | Select-Object -Unique
         if ($anchor.Username -and $anchor.Username -notin $uniqueBaselineUsers) {
             $designFlaws += "DF07 UserMismatch ($($anchor.Username) not in baseline)"
+        }
+    }
+
+    # DF08 TimeWindowMismatch
+    $minMax = @{}
+    foreach ($key in $data.Keys) {
+        $dates = $data[$key].EventTime | Where-Object { $_ -ne $null }
+        if ($dates) {
+            $sorted = $dates | Sort-Object
+            $minMax[$key] = @{ Min = $sorted[0]; Max = $sorted[-1] }
+        }
+    }
+    
+    if ($anchor.EventTime) {
+        $threshold = $anchor.EventTime.AddDays(-45)
+        $outOfRange = @()
+        foreach ($key in $minMax.Keys) {
+            if ($key -match "7d|30d" -and $minMax[$key].Max -lt $threshold) {
+                $outOfRange += "$key (max: $($minMax[$key].Max.ToShortDateString()))"
+            }
+        }
+        if ($outOfRange) {
+            $designFlaws += "DF08 TimeWindowMismatch"
+            Write-Host "WARNING: Baseline data is outside 45-day window: $($outOfRange -join ', ')"
         }
     }
 } else {
@@ -341,6 +371,9 @@ if ($designFlaws.Count -gt 0) {
     }
     if ($designFlaws -match "DF06") {
         Write-Host "HINT: Join rate is low. Re-export both CSVs ensuring the same Time Range and Filters (e.g. User or Request ID) are applied to both Sign-ins and AuthDetails."
+    }
+    if ($designFlaws -contains "DF08 TimeWindowMismatch") {
+        Write-Host "HINT: Baseline files appear to contain data from a different time period than the anchor."
     }
 } else {
     Write-Host "None"
