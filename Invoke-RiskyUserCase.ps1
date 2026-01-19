@@ -29,8 +29,9 @@ function Get-Value {
     if ($null -eq $Row) { return $null }
     
     # Use the hardened Get-FieldValue logic for core values too
-    # This handles "Request ID" vs "RequestID" vs "requestid" automatically
-    return Get-FieldValue -Row $Row -Aliases @($ColumnName, ($ColumnName -replace ' ', '')) -Default $null
+    # This handles "Request ID" vs "RequestID" vs "Date" vs "Date (UTC)"
+    $aliases = @($ColumnName, ($ColumnName -replace ' ', ''), ($ColumnName + " (UTC)"), ($ColumnName -replace ' ', '_'))
+    return Get-FieldValue -Row $Row -Aliases $aliases -Default $null
 }
 
 function Parse-EventTime {
@@ -471,11 +472,14 @@ if ($anchor) {
     $AnchorDevice | Format-List
     
     # Timezone Conversions (Force UTC source)
-    $utcTime = if ($anchor.EventTime) { $anchor.EventTime } else { [datetime]::UtcNow }
+    $utcTime = [datetime]::UtcNow # Absolute fallback
+    if ($anchor.EventTime -is [datetime]) {
+        $utcTime = [datetime]::SpecifyKind($anchor.EventTime, [System.DateTimeKind]::Utc)
+    } elseif ($anchor.EventTime -is [string] -and -not [string]::IsNullOrWhiteSpace($anchor.EventTime)) {
+        $parsed = Parse-EventTime $anchor.EventTime
+        if ($parsed) { $utcTime = $parsed }
+    }
     
-    # Ensure $utcTime is specifically Utc kind to satisfy .NET conversion rules
-    if ($utcTime.Kind -ne 'Utc') { $utcTime = [datetime]::SpecifyKind($utcTime, [System.DateTimeKind]::Utc) }
-
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
 
@@ -842,9 +846,9 @@ if ($anchor) {
 
         <div class="section-title">TIME CONVERSIONS</div>
         <div class="grid">
-            <div class="card"><span class="label">UTC</span><span class="value">$($utcTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
-            <div class="card"><span class="label">EST (Eastern)</span><span class="value">$($estTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
-            <div class="card"><span class="label">CST (Central)</span><span class="value">$($cstTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+            <div class="card"><span class="label">UTC</span><span class="value">$(if($utcTime){$utcTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span></div>
+            <div class="card"><span class="label">EST (Eastern)</span><span class="value">$(if($estTime){$estTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span></div>
+            <div class="card"><span class="label">CST (Central)</span><span class="value">$(if($cstTime){$cstTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span></div>
         </div>
 
         <div class="section-title">IDENTITY & NETWORK</div>
