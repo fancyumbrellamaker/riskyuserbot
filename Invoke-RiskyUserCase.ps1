@@ -11,14 +11,8 @@ param(
 
 # =========================
 # Risky User CSV Triage MVP
-# Phase 1: CSV-only
-# Inputs:
-# InteractiveSignIns.csv
-# InteractiveSignIns_AuthDetails.csv
-# Join Key:
-# Request ID
-# Output:
-# Console output only (report file later)
+# Phase 1: DIAGNOSTICS
+# Phase 2: ANCHOR
 # =========================
 
 function Fail {
@@ -35,6 +29,13 @@ function Get-Value {
     if ($null -eq $Row) { return $null }
     $props = $Row.PSObject.Properties.Name
     if ($props -contains $ColumnName) { return $Row.$ColumnName }
+    
+    # Robust fallback for common Entra CSV variations
+    if ($ColumnName -eq "Date" -and ($props -contains "Date (UTC)")) { return $Row."Date (UTC)" }
+    if ($ColumnName -eq "IP address" -and ($props -contains "IPAddress")) { return $Row.IPAddress }
+    if ($ColumnName -eq "Request ID" -and ($props -contains "RequestId")) { return $Row.RequestId }
+    if ($ColumnName -eq "Conditional Access" -and ($props -contains "ConditionalAccess")) { return $Row.ConditionalAccess }
+    
     return $null
 }
 
@@ -44,95 +45,19 @@ function Parse-EventTime {
     try { return [datetime]::Parse($Value) } catch { return $null }
 }
 
-function Normalize-InteractiveSignInRow {
+function Normalize-Row {
     param($Row)
-
-    $dt = Parse-EventTime (Get-Value -Row $Row -ColumnName "Date")
-
-    $statusRaw = Get-Value -Row $Row -ColumnName "Status"
-    $statusNorm = "Unknown"
-    if ($statusRaw) {
-        $s = $statusRaw.ToString().Trim().ToLower()
-        if ($s -match "success") { $statusNorm = "Success" }
-        elseif ($s -match "fail") { $statusNorm = "Failure" }
-        elseif ($s -match "interrupt") { $statusNorm = "Interrupted" }
-    }
-
     [pscustomobject]@{
-        Username = Get-Value -Row $Row -ColumnName "Username"
-        EventTime = $dt
-        Application = Get-Value -Row $Row -ColumnName "Application"
-        StatusRaw = $statusRaw
-        Status = $statusNorm
-        IPAddress = Get-Value -Row $Row -ColumnName "IP address"
-        Location = Get-Value -Row $Row -ColumnName "Location"
-        RequestId = Get-Value -Row $Row -ColumnName "Request ID"
-        SignInId = Get-Value -Row $Row -ColumnName "Sign-in ID"
+        Username          = Get-Value -Row $Row -ColumnName "Username"
+        EventTime         = Parse-EventTime (Get-Value -Row $Row -ColumnName "Date")
+        Application       = Get-Value -Row $Row -ColumnName "Application"
+        Status            = Get-Value -Row $Row -ColumnName "Status"
+        IPAddress         = Get-Value -Row $Row -ColumnName "IP address"
+        Location          = Get-Value -Row $Row -ColumnName "Location"
+        RequestId         = Get-Value -Row $Row -ColumnName "Request ID"
+        ConditionalAccess = Get-Value -Row $Row -ColumnName "Conditional Access"
+        MfaResult         = "N/A"
     }
-}
-
-function Normalize-AuthDetailRow {
-    param($Row)
-
-    $succeededRaw = Get-Value -Row $Row -ColumnName "Succeeded"
-    $mfaSucceeded = $null
-
-    if ($succeededRaw -ne $null) {
-        $t = $succeededRaw.ToString().Trim().ToLower()
-        if ($t -in @("true","1","yes")) { $mfaSucceeded = $true }
-        if ($t -in @("false","0","no")) { $mfaSucceeded = $false }
-    }
-
-    [pscustomobject]@{
-        RequestId = Get-Value -Row $Row -ColumnName "Request ID"
-        AuthDetailTime = Parse-EventTime (Get-Value -Row $Row -ColumnName "Date")
-        AuthenticationMethod = Get-Value -Row $Row -ColumnName "Authentication method"
-        AuthenticationMethodDetail = Get-Value -Row $Row -ColumnName "Authentication method detail"
-        MfaSucceeded = $mfaSucceeded
-        ResultDetail = Get-Value -Row $Row -ColumnName "Result detail"
-        Requirement = Get-Value -Row $Row -ColumnName "Requirement"
-    }
-}
-
-function Join-SignInsWithAuthDetails {
-    param(
-        [Parameter(Mandatory=$true)] $InteractiveEvents,
-        [Parameter(Mandatory=$true)] $AuthDetails
-    )
-
-    # GitHub trick: hashtable join
-    $authByRequestId = @{}
-    foreach ($a in $AuthDetails) {
-        if (-not [string]::IsNullOrWhiteSpace($a.RequestId)) {
-            if (-not $authByRequestId.ContainsKey($a.RequestId)) {
-                $authByRequestId[$a.RequestId] = $a
-            }
-        }
-    }
-
-    $joined = foreach ($e in $InteractiveEvents) {
-        $auth = $null
-        if ($e.RequestId -and $authByRequestId.ContainsKey($e.RequestId)) {
-            $auth = $authByRequestId[$e.RequestId]
-        }
-
-        [pscustomobject]@{
-            Username = $e.Username
-            EventTime = $e.EventTime
-            Application = $e.Application
-            Status = $e.Status
-            IPAddress = $e.IPAddress
-            Location = $e.Location
-            RequestId = $e.RequestId
-
-            MfaSucceeded = $auth.MfaSucceeded
-            AuthenticationMethod = $auth.AuthenticationMethod
-            Requirement = $auth.Requirement
-            ResultDetail = $auth.ResultDetail
-        }
-    }
-
-    return $joined
 }
 
 function Get-TopCounts {
@@ -141,7 +66,7 @@ function Get-TopCounts {
         [Parameter(Mandatory=$true)] [string] $PropertyName,
         [int] $Top = 5
     )
-
+    if ($null -eq $Events -or $Events.Count -eq 0) { return @() }
     $Events |
         Where-Object { $_.$PropertyName -and $_.$PropertyName.ToString().Trim() -ne "" } |
         Group-Object -Property $PropertyName |
@@ -150,61 +75,30 @@ function Get-TopCounts {
         ForEach-Object { [pscustomobject]@{ Name = $_.Name; Count = $_.Count } }
 }
 
-function Select-AnchorEvent {
-    param(
-        [Parameter(Mandatory=$true)] $Events,
-        $AlertTimeValue
-    )
-
-    $valid = $Events | Where-Object { $_.EventTime -ne $null }
-
-    if ($AlertTimeValue) {
-        return $valid |
-            Sort-Object @{Expression={ [math]::Abs(($_.EventTime - $AlertTimeValue).TotalSeconds) }} |
-            Select-Object -First 1
-    }
-
-    $recentSuccess = $valid |
-        Where-Object { $_.Status -eq "Success" } |
-        Sort-Object EventTime |
-        Select-Object -Last 1
-
-    if ($recentSuccess) { return $recentSuccess }
-
-    return $valid | Sort-Object EventTime | Select-Object -Last 1
-}
-
 function Test-IsNewValue {
     param(
         [Parameter(Mandatory=$true)] $BaselineEvents,
         [Parameter(Mandatory=$true)] [string] $PropertyName,
         [Parameter(Mandatory=$true)] $Value
     )
-
     if ($null -eq $Value -or $Value.ToString().Trim() -eq "") { return $false }
-
     $existing = $BaselineEvents |
         Where-Object { $_.$PropertyName -and $_.$PropertyName.ToString().Trim() -ne "" } |
         Select-Object -ExpandProperty $PropertyName -Unique
-
     return -not ($existing -contains $Value)
 }
 
 function Get-DecisionBucket {
     param([Parameter(Mandatory=$true)] $Anchor)
-
-    if ($Anchor.Status -ne "Success") {
-        return "close_attempt_blocked"
+    if ($null -eq $Anchor) { return "unknown" }
+    $status = if ($Anchor.Status) { $Anchor.Status.ToString().ToLower() } else { "" }
+    if ($status -notmatch "success") { return "close_attempt_blocked" }
+    
+    $mfa = if ($Anchor.MfaResult) { $Anchor.MfaResult.ToString().ToLower() } else { "" }
+    if ($status -match "success") {
+        if ($mfa -eq "false" -or $mfa -eq "no") { return "contain_hard" }
+        if ($mfa -eq "true" -or $mfa -eq "yes") { return "close_benign" }
     }
-
-    if ($Anchor.Status -eq "Success" -and $Anchor.MfaSucceeded -eq $false) {
-        return "contain_hard"
-    }
-
-    if ($Anchor.Status -eq "Success" -and $Anchor.MfaSucceeded -eq $true) {
-        return "close_benign"
-    }
-
     return "investigate"
 }
 
@@ -216,11 +110,10 @@ function Build-TicketStory {
         [bool] $IsNewLocation,
         [bool] $IsNewApp
     )
-
     $parts = @()
     $parts += "Anchor sign-in: user=$($Anchor.Username), time=$($Anchor.EventTime), app=$($Anchor.Application), status=$($Anchor.Status)."
     $parts += "IP=$($Anchor.IPAddress), location=$($Anchor.Location), requestId=$($Anchor.RequestId)."
-    $parts += "MFA: succeeded=$($Anchor.MfaSucceeded), method=$($Anchor.AuthenticationMethod), requirement=$($Anchor.Requirement)."
+    $parts += "MFA: result=$($Anchor.MfaResult), ca=$($Anchor.ConditionalAccess)."
     $parts += "Novelty: newIP=$IsNewIP, newLocation=$IsNewLocation, newApp=$IsNewApp."
     $parts += "Decision: $DecisionBucket."
     return ($parts -join " ")
@@ -234,130 +127,129 @@ if (-not (Test-Path $CaseFolder)) {
     Fail "CaseFolder not found: $CaseFolder"
 }
 
-# 1. Load Interactive (Optional)
-$interactivePath = Join-Path $CaseFolder "InteractiveSignIns.csv"
-$authDetailsPath = Join-Path $CaseFolder "InteractiveSignIns_AuthDetails.csv"
-$joined = @()
-
-if ((Test-Path $interactivePath) -and (Test-Path $authDetailsPath)) {
-    $interactiveRaw = Import-Csv $interactivePath
-    $authRaw = Import-Csv $authDetailsPath
-    Write-Host "Loaded InteractiveSignIns rows: $($interactiveRaw.Count)"
-    Write-Host "Loaded AuthDetails rows: $($authRaw.Count)"
-    $interactiveEvents = $interactiveRaw | ForEach-Object { Normalize-InteractiveSignInRow $_ }
-    $authDetails = $authRaw | ForEach-Object { Normalize-AuthDetailRow $_ }
-    $joined = Join-SignInsWithAuthDetails -InteractiveEvents $interactiveEvents -AuthDetails $authDetails
-    Write-Host "Joined Interactive rows: $($joined.Count)"
-} else {
-    Write-Host "Interactive files missing or incomplete; skipping."
+$designFlaws = @()
+$foundFiles = Get-ChildItem -Path $CaseFolder -Filter "*.csv"
+$data = @{}
+$presence = @{
+    "Interactive"    = $false
+    "NonInteractive" = $false
+    "AuthDetails"    = $false
+    "AppSignIns"     = $false
+    "MSISignIns"     = $false
 }
 
-# 2. Load Non-Interactive (Optional)
-$niEvents = @()
-$niFiles = "NonInteractiveSignIns_24h.csv", "NonInteractiveSignIns_7d.csv", "NonInteractiveSignIns_30d.csv"
-foreach ($f in $niFiles) {
-    $p = Join-Path $CaseFolder $f
-    if (Test-Path $p) {
-        $raw = Import-Csv $p
-        if ($raw) {
-            Write-Host "Loaded $f rows: $($raw.Count)"
-            $niEvents += $raw | ForEach-Object { Normalize-InteractiveSignInRow $_ }
+# --- DIAGNOSTICS ---
+Write-Host "`n=== DIAGNOSTICS ==="
+
+if ($foundFiles.Count -eq 0) {
+    Write-Host "No CSV files found in $CaseFolder"
+    $designFlaws += "DF01 MissingFiles"
+} else {
+    foreach ($file in $foundFiles) {
+        try {
+            $raw = Import-Csv $file.FullName -ErrorAction Stop
+            # Store normalized data for datasets
+            $normalized = $raw | ForEach-Object { Normalize-Row $_ }
+            $data[$file.Name] = $normalized
+            Write-Host "Loaded: $($file.Name) ($($raw.Count) rows)"
+            
+            if ($file.Name -match "AuthDetails") { $presence["AuthDetails"] = $true }
+            elseif ($file.Name -match "NonInteractive") { $presence["NonInteractive"] = $true }
+            elseif ($file.Name -match "InteractiveSignIns") { $presence["Interactive"] = $true }
+            elseif ($file.Name -match "AppSignIns") { $presence["AppSignIns"] = $true }
+            elseif ($file.Name -match "MSISignIns") { $presence["MSISignIns"] = $true }
+        } catch {
+            Write-Warning "Failed to load $($file.Name): $($_.Exception.Message)"
+            $designFlaws += "DF04 DateParseFailure ($($file.Name))"
         }
     }
 }
 
-if ($joined.Count -eq 0 -and $niEvents.Count -eq 0) {
-    Fail "No sign-in data loaded. Check CaseFolder for CSV files."
+Write-Host "`nDataset Types Present:"
+foreach ($type in $presence.Keys | Sort-Object) {
+    $status = if ($presence[$type]) { "[PRESENT]" } else { "[MISSING]" }
+    Write-Host "  $type`: $status"
 }
 
-# 3. Anchor selection
+# --- ANCHOR ---
+Write-Host "`n=== ANCHOR ==="
 $anchor = $null
-$foundIn = ""
 
-if ($AnchorRequestId) {
-    $anchor = $joined | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
-    if ($anchor) { $foundIn = "Interactive" }
-    else {
-        $anchor = $niEvents | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
-        if ($anchor) { $foundIn = "Non-interactive" }
-    }
+if ([string]::IsNullOrWhiteSpace($AnchorRequestId)) {
+    Write-Host "No -AnchorRequestId provided. Skipping anchor selection."
 } else {
-    $alertTimeValue = $null
-    if ($AlertTime) { $alertTimeValue = Parse-EventTime $AlertTime }
-    $anchor = Select-AnchorEvent -Events $joined -AlertTimeValue $alertTimeValue
-    if ($anchor) { $foundIn = "Interactive (Default Selection)" }
-}
-
-if (-not $anchor) {
-    if ($AnchorRequestId) {
-        Write-Host ""
-        Write-Host "AnchorRequestId not found: $AnchorRequestId"
-        
-        Write-Host "`nTop 10 Newest Interactive Request IDs:"
-        $joined | Sort-Object EventTime -Descending | Select-Object -First 10 | Format-Table EventTime, RequestId, Application -AutoSize
-        
-        if ($niEvents.Count -gt 0) {
-            Write-Host "`nTop 10 Newest Non-interactive Request IDs:"
-            $niEvents | Sort-Object EventTime -Descending | Select-Object -First 10 | Format-Table EventTime, RequestId, Application -AutoSize
+    # Search Order: Interactive then Non-Interactive
+    $searchOrder = $data.Keys | Sort-Object { if ($_ -match "InteractiveSignIns" -and $_ -notmatch "AuthDetails") { 0 } else { 1 } }
+    foreach ($key in $searchOrder) {
+        if ($key -match "AuthDetails") { continue }
+        $match = $data[$key] | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
+        if ($match) {
+            $anchor = $match
+            Write-Host "Found anchor in: $key"
+            
+            # Link AuthDetails if Interactive
+            if ($key -match "InteractiveSignIns") {
+                $authKey = $key.Replace("InteractiveSignIns", "InteractiveSignIns_AuthDetails")
+                if ($data.ContainsKey($authKey)) {
+                    $authMatch = $data[$authKey] | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
+                    if ($authMatch) { $anchor.MfaResult = $authMatch.Status }
+                }
+            }
+            break
         }
-        exit 0
     }
-    Fail "No anchor event found."
 }
 
-Write-Host ""
-Write-Host "ANCHOR (Found in: $foundIn)"
-$anchor | Format-List Username,EventTime,Application,Status,IPAddress,Location,RequestId,MfaSucceeded,AuthenticationMethod,Requirement
+if ($anchor) {
+    $anchor | Format-List EventTime, Username, IPAddress, Location, Application, Status, ConditionalAccess, MfaResult, RequestId
+} else {
+    if (-not [string]::IsNullOrWhiteSpace($AnchorRequestId)) {
+        $designFlaws += "DF05 AnchorNotFound"
+        Write-Host "Anchor Request ID '$AnchorRequestId' not found."
+    }
+}
 
-# 4. Baseline summaries
-if ($joined.Count -gt 0) {
-    Write-Host ""
-    Write-Host "--- INTERACTIVE BASELINE (Top 5) ---"
+# --- BASELINE_7D ---
+Write-Host "`n=== BASELINE_7D ==="
+$data7d = $data.Values | ForEach-Object { $_ } | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }
+if ($data7d) {
     Write-Host "Top IPAddress:"
-    Get-TopCounts -Events $joined -PropertyName "IPAddress" -Top 5 | Format-Table -AutoSize
-    Write-Host "Top Location:"
-    Get-TopCounts -Events $joined -PropertyName "Location" -Top 5 | Format-Table -AutoSize
-    Write-Host "Top Application:"
-    Get-TopCounts -Events $joined -PropertyName "Application" -Top 5 | Format-Table -AutoSize
+    Get-TopCounts -Events $data7d -PropertyName "IPAddress" | Format-Table -AutoSize
 }
 
-if ($niEvents.Count -gt 0) {
-    Write-Host ""
-    Write-Host "--- NON-INTERACTIVE BASELINE (Top 5) ---"
+# --- BASELINE_30D ---
+Write-Host "`n=== BASELINE_30D ==="
+$data30d = $data.Values | ForEach-Object { $_ } | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }
+if ($data30d) {
     Write-Host "Top IPAddress:"
-    Get-TopCounts -Events $niEvents -PropertyName "IPAddress" -Top 5 | Format-Table -AutoSize
-    Write-Host "Top Location:"
-    Get-TopCounts -Events $niEvents -PropertyName "Location" -Top 5 | Format-Table -AutoSize
-    Write-Host "Top Application:"
-    Get-TopCounts -Events $niEvents -PropertyName "Application" -Top 5 | Format-Table -AutoSize
+    Get-TopCounts -Events $data30d -PropertyName "IPAddress" | Format-Table -AutoSize
 }
 
-# 5. Novelty vs baseline (simple)
-# Use interactive as baseline if available; otherwise use non-interactive
-$baseline = if ($joined.Count -gt 0) { $joined } else { $niEvents }
+# --- NOVELTY ---
+Write-Host "`n=== NOVELTY ==="
+$isNewIP = $false; $isNewLoc = $false; $isNewApp = $false
+if ($anchor) {
+    $isNewIP = Test-IsNewValue -BaselineEvents $data30d -PropertyName "IPAddress" -Value $anchor.IPAddress
+    Write-Host "New IP: $isNewIP"
+}
 
-$isNewIP = Test-IsNewValue -BaselineEvents $baseline -PropertyName "IPAddress" -Value $anchor.IPAddress
-$isNewLocation = Test-IsNewValue -BaselineEvents $baseline -PropertyName "Location" -Value $anchor.Location
-$isNewApp = Test-IsNewValue -BaselineEvents $baseline -PropertyName "Application" -Value $anchor.Application
+# --- DESIGN_FLAWS ---
+Write-Host "`n=== DESIGN_FLAWS ==="
+if ($designFlaws.Count -gt 0) {
+    $designFlaws | Select-Object -Unique | ForEach-Object { Write-Host $_ }
+} else {
+    Write-Host "None"
+}
 
-Write-Host ""
-Write-Host "NOVELTY"
-Write-Host "New IP: $isNewIP"
-Write-Host "New Location: $isNewLocation"
-Write-Host "New App: $isNewApp"
-
-# Decision + story
+# --- DECISION ---
+Write-Host "`n=== DECISION ==="
 $decision = Get-DecisionBucket -Anchor $anchor
-
-Write-Host ""
-Write-Host "DECISION"
 Write-Host $decision
 
-Write-Host ""
-Write-Host "STORY"
-Write-Host (Build-TicketStory -Anchor $anchor -DecisionBucket $decision -IsNewIP $isNewIP -IsNewLocation $isNewLocation -IsNewApp $isNewApp)
+# --- STORY ---
+Write-Host "`n=== STORY ==="
+if ($anchor) {
+    Write-Host (Build-TicketStory -Anchor $anchor -DecisionBucket $decision -IsNewIP $isNewIP -IsNewLocation $isNewLoc -IsNewApp $isNewApp)
+}
 
-Write-Host ""
-Write-Host "DONE"
-Write-Host "Run command:"
-Write-Host ".\Invoke-RiskyUserCase.ps1 -CaseFolder `"$CaseFolder`""
+Write-Host "`nDONE"
