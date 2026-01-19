@@ -247,7 +247,7 @@ function Get-LastSeen {
             }
         }
     }
-    return if ($latest) { $latest.ToString("yyyy-MM-dd HH:mm") } else { "Never" }
+    if ($latest) { return $latest.ToString("yyyy-MM-dd HH:mm") } else { return "Never" }
 }
 
 function Build-TicketStory {
@@ -1087,9 +1087,11 @@ if ($anchor) {
                 </div>
             </div>
             <div class="card">
-                <span class="label">Lansweeper (Asset Search)</span>
+                <span class="label">Lansweeper (Manual Pivot)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="http://mxpcorls01:82/Search.aspx?q=$($AnchorDevice.DeviceId)" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Search by Hostname</a>
+                    <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Target Host: <span style="color:var(--green)">$($AnchorDevice.DeviceId)</span> <span class="copy-icon" onclick="copy('$($AnchorDevice.DeviceId)')">COPY</span></div>
+                    <a href="http://mxpcorls01:82/Default.aspx" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Open Lansweeper Dashboard</a>
+                    <div style="font-size:10px; color:var(--text-secondary); margin-top:8px;">Note: AssetID is calculated on vendor backend. Open dashboard and paste hostname into search.</div>
                 </div>
             </div>
             <div class="card span-2">
