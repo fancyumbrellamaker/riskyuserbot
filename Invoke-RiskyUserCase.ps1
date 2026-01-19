@@ -247,7 +247,13 @@ if ($anchor) {
 } else {
     if (-not [string]::IsNullOrWhiteSpace($AnchorRequestId)) {
         $designFlaws += "DF05 AnchorNotFound"
-        Write-Host "Anchor Request ID '$AnchorRequestId' not found."
+        Write-Host "Anchor Request ID '$AnchorRequestId' not found in any loaded dataset."
+        
+        foreach ($key in $data.Keys) {
+            if ($key -match "AuthDetails") { continue }
+            Write-Host "`nTop 10 Newest Request IDs in $key`:"
+            $data[$key] | Sort-Object EventTime -Descending | Select-Object -First 10 | Format-Table EventTime, Username, RequestId, Application -AutoSize
+        }
     }
 }
 
