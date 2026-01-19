@@ -1098,11 +1098,15 @@ if ($anchor) {
                 </div>
             </div>
             <div class="card">
-                <span class="label">Proofpoint (Search)</span>
+                <span class="label">Proofpoint (Mail History)</span>
                 <div class="links" style="margin-top:10px;">
-                    <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Mail to: $($anchor.Username)</div>
-                    <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$ppUser&since=$ppSince&until=$ppUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none; margin-bottom:5px;">Email (3D Lookback)</a>
-                    <a href="https://us.threatresponse.proofpoint.com/incidents?search=$ppUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">TRAP Incidents</a>
+                    <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$ppUser&since=$ppSince&until=$ppUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">User Email (3D Lookback)</a>
+                </div>
+            </div>
+            <div class="card">
+                <span class="label">Proofpoint (TRAP Incidents)</span>
+                <div class="links" style="margin-top:10px;">
+                    <a href="https://us.threatresponse.proofpoint.com/incidents?search=$ppUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Search TRAP Incidents</a>
                 </div>
             </div>
             <div class="card">
