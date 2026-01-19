@@ -47,7 +47,11 @@ function Get-Value {
 function Parse-EventTime {
     param([string] $Value)
     if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
-    try { return [datetime]::Parse($Value) } catch { return $null }
+    try { 
+        # Ensure the time is parsed as UTC
+        $dt = [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+        return [datetime]::SpecifyKind($dt, [System.DateTimeKind]::Utc)
+    } catch { return $null }
 }
 
 function Normalize-Row {
@@ -59,11 +63,29 @@ function Normalize-Row {
         Status            = Get-Value -Row $Row -ColumnName "Status"
         IPAddress         = Get-Value -Row $Row -ColumnName "IP address"
         Location          = Get-Value -Row $Row -ColumnName "Location"
+        City              = Get-FieldValue -Row $Row -Aliases @("City")
+        State             = Get-FieldValue -Row $Row -Aliases @("State", "State/Province")
+        Country           = Get-FieldValue -Row $Row -Aliases @("Country", "Country/Region")
         RequestId         = Get-Value -Row $Row -ColumnName "Request ID"
         ConditionalAccess = Get-Value -Row $Row -ColumnName "Conditional Access"
         MfaResult         = "N/A"
         DeviceDetail      = $Row # Keep raw row for device extraction
     }
+}
+
+# Column Aliases for Device + UA + Geo
+$ColumnAliases = @{
+    "DeviceId"        = @("Device ID", "DeviceId")
+    "OperatingSystem" = @("Operating System", "OS", "OperatingSystem")
+    "Browser"         = @("Browser")
+    "ClientApp"       = @("Client app", "ClientApp")
+    "JoinType"        = @("Join Type", "JoinType")
+    "Compliant"       = @("Compliant")
+    "Managed"         = @("Managed")
+    "UserAgent"       = @("User agent", "UserAgent", "User-Agent")
+    "City"            = @("City")
+    "State"           = @("State", "State/Province")
+    "Country"         = @("Country", "Country/Region")
 }
 
 function Get-FieldValue {
@@ -73,26 +95,26 @@ function Get-FieldValue {
         $Default = "Unknown"
     )
     if ($null -eq $Row) { return $Default }
-    $props = $Row.PSObject.Properties.Name
+    
+    $props = @()
+    if ($Row.PSObject -and $Row.PSObject.Properties) {
+        $props = $Row.PSObject.Properties.Name
+    } elseif ($Row -is [System.Collections.IDictionary]) {
+        $props = $Row.Keys
+    }
+
     foreach ($alias in $Aliases) {
-        if ($props -contains $alias) {
-            $val = $Row.$alias
-            if (-not [string]::IsNullOrWhiteSpace($val)) { return $val }
+        foreach ($p in $props) {
+            if ($p -ieq $alias -or ($p -replace '[^a-zA-Z0-9]', '') -ieq ($alias -replace '[^a-zA-Z0-9]', '')) {
+                $val = if ($Row.PSObject) { $Row.$p } else { $Row[$p] }
+                if ($null -ne $val -and -not [string]::IsNullOrWhiteSpace($val.ToString())) {
+                    return $val.ToString().Trim()
+                }
+            }
         }
     }
+    
     return $Default
-}
-
-# Column Aliases for Device + UA
-$ColumnAliases = @{
-    "DeviceId"        = @("Device ID", "DeviceId")
-    "OperatingSystem" = @("Operating System", "OS")
-    "Browser"         = @("Browser")
-    "ClientApp"       = @("Client app", "ClientApp")
-    "JoinType"        = @("Join Type", "JoinType")
-    "Compliant"       = @("Compliant")
-    "Managed"         = @("Managed")
-    "UserAgent"       = @("User agent", "UserAgent", "User-Agent")
 }
 
 function Get-TopCounts {
@@ -135,6 +157,25 @@ function Get-DecisionBucket {
         if ($mfa -eq "true" -or $mfa -eq "yes") { return "close_benign" }
     }
     return "investigate"
+}
+
+function Get-Frequency {
+    param(
+        [string]$Value, 
+        [string[]]$Aliases, 
+        $Datasets
+    )
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -eq "Unknown") { return 0 }
+    $total = 0
+    foreach ($set in $Datasets) {
+        if ($null -ne $set) {
+            $total += ($set | Where-Object { 
+                $v = Get-FieldValue -Row $_ -Aliases $Aliases
+                $v -ieq $Value 
+            }).Count
+        }
+    }
+    return $total
 }
 
 function Build-TicketStory {
@@ -266,17 +307,14 @@ if ($foundFiles.Count -eq 0) {
                     if ($samples.Count -lt 3) { $samples += $dtValue }
                 }
                 
-                $normalized.Add([pscustomobject]@{
-                    Username          = Get-Value -Row $r -ColumnName "Username"
-                    EventTime         = $dt
-                    Application       = Get-Value -Row $r -ColumnName "Application"
-                    Status            = Get-Value -Row $r -ColumnName "Status"
-                    IPAddress         = Get-Value -Row $r -ColumnName "IP address"
-                    Location          = Get-Value -Row $r -ColumnName "Location"
-                    RequestId         = Get-Value -Row $r -ColumnName "Request ID"
-                    ConditionalAccess = Get-Value -Row $r -ColumnName "Conditional Access"
-                    MfaResult         = "N/A"
-                })
+                # Add normalized properties directly to the CSV object for maximum data retention
+                $r | Add-Member -MemberType NoteProperty -Name "EventTime" -Value $dt -Force
+                $r | Add-Member -MemberType NoteProperty -Name "RequestId" -Value (Get-Value -Row $r -ColumnName "Request ID") -Force
+                $r | Add-Member -MemberType NoteProperty -Name "IPAddress" -Value (Get-Value -Row $r -ColumnName "IP address") -Force
+                $r | Add-Member -MemberType NoteProperty -Name "MfaResult" -Value "N/A" -Force
+                $r | Add-Member -MemberType NoteProperty -Name "ConditionalAccess" -Value (Get-FieldValue -Row $r -Aliases @("Conditional Access")) -Force
+                
+                $normalized.Add($r)
             }
 
             if ($raw.Count -gt 0 -and ($failCount / $raw.Count) -gt 0.3) {
@@ -385,23 +423,100 @@ if ($anchor) {
     
     # --- ANCHOR_DEVICE ---
     Write-Host "`n=== ANCHOR_DEVICE ==="
+    # Debug properties
+    # $anchor.PSObject.Properties.Name | ForEach-Object { Write-Host "DEBUG PROP: $_" }
+    
     $AnchorDevice = [pscustomobject]@{
-        DeviceId        = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["DeviceId"]
-        OperatingSystem = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["OperatingSystem"]
-        Browser         = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["Browser"]
-        ClientApp       = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["ClientApp"]
-        JoinType        = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["JoinType"]
-        Compliant       = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["Compliant"]
-        Managed         = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["Managed"]
-        UserAgent       = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["UserAgent"]
+        DeviceId        = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["DeviceId"]
+        OperatingSystem = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["OperatingSystem"]
+        Browser         = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["Browser"]
+        ClientApp       = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["ClientApp"]
+        JoinType        = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["JoinType"]
+        Compliant       = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["Compliant"]
+        Managed         = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["Managed"]
+        UserAgent       = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["UserAgent"]
     }
     $AnchorDevice | Format-List
+    
+    # Timezone Conversions (Force UTC source)
+    $utcTime = $anchor.EventTime
+    $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
+    $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
     
     # Dataset Time Windows
     Write-Host "`nDataset Time Windows:"
     foreach ($key in $minMax.Keys | Sort-Object) {
         Write-Host "  $key`: $($minMax[$key].Min.ToString('yyyy-MM-dd')) to $($minMax[$key].Max.ToString('yyyy-MM-dd'))"
     }
+
+    # --- DEVICE MATRIX LOGIC ---
+    $allEvents = $data.Values | ForEach-Object { $_ }
+    $deviceGroups = $allEvents | Group-Object { 
+        $d = Get-FieldValue -Row $_ -Aliases $ColumnAliases["DeviceId"]
+        if ($d -eq "Unknown") {
+            $ua = Get-FieldValue -Row $_ -Aliases $ColumnAliases["UserAgent"]
+            if ($ua -ne "Unknown") { "Unknown ($($ua.Substring(0,[math]::Min(30, $ua.Length))))" } else { "Unknown Device" }
+        } else { $d }
+    }
+    
+    $matrixRows = foreach ($g in $deviceGroups) {
+        $devId = $g.Name
+        $groupEvents = $g.Group
+        
+        $ips = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases @("IP address") } | Select-Object -Unique
+        $locs = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases @("Location") } | Select-Object -Unique
+        $apps = $groupEvents | Group-Object { Get-FieldValue -Row $_ -Aliases @("Application") } | Sort-Object Count -Descending | Select-Object -First 3 | ForEach-Object { $_.Name }
+        $osBrowser = $groupEvents | ForEach-Object { 
+            $o = Get-FieldValue -Row $_ -Aliases $ColumnAliases["OperatingSystem"]
+            $b = Get-FieldValue -Row $_ -Aliases $ColumnAliases["Browser"]
+            "$o / $b"
+        } | Select-Object -Unique
+
+        # Security Posture logic
+        $compliances = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["Compliant"] } | Select-Object -Unique
+        $joins       = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["JoinType"] } | Select-Object -Unique
+        $isAppOnly   = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["ClientApp"] } | Where-Object { $_ -match "App|Service" } | Select-Object -First 1
+        
+        # Last Seen Logic
+        $lastSeenTime = ($groupEvents | Sort-Object EventTime -Descending | Select-Object -First 1).EventTime
+        $lastSeenStr = if ($lastSeenTime) { $lastSeenTime.ToString("yyyy-MM-dd HH:mm") } else { "Unknown" }
+
+        # Frequency windows
+        $c24 = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }).Count
+        $c7  = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }).Count
+        $c30 = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }).Count
+        $totalFreq = $groupEvents.Count
+
+        $rowClass = if ($devId -eq $AnchorDevice.DeviceId -or $devId -match [regex]::Escape($AnchorDevice.DeviceId)) { "class='anchor-row-highlight'" } else { "" }
+
+        @"
+        <tr $rowClass>
+            <td class="val-col" style="font-size:11px;">$devId</td>
+            <td style="font-size:11px;">$($ips -join ", ")</td>
+            <td style="font-size:11px;">$($locs -join ", ")</td>
+            <td style="font-size:10px; color:var(--blue)">$($osBrowser -join "<br>")</td>
+            <td style="font-size:10px;">
+                <div style="color:$(if($compliances -contains 'True'){'var(--green)'}else{'var(--text-secondary)'})">Compliant: $($compliances -join '/')</div>
+                <div style="color:var(--blue)">Join: $($joins -join '/')</div>
+                $(if($isAppOnly){"<div style='color:var(--orange)'>TYPE: Application</div>"}else{"<div style='color:var(--text-secondary)'>TYPE: User</div>"})
+            </td>
+            <td style="color:var(--text-secondary); font-size:10px;">$($apps -join ", ")</td>
+            <td style="font-size:11px; white-space:nowrap;">$lastSeenStr</td>
+            <td class="freq-cell" style="color:var(--text-primary)">$totalFreq</td>
+            <td class="freq-cell $(if($c24 -eq 0){'zero'})">$c24</td>
+            <td class="freq-cell $(if($c7 -eq 0){'zero'})">$c7</td>
+            <td class="freq-cell $(if($c30 -eq 0){'zero'})">$c30</td>
+        </tr>
+"@
+    }
+
+    # Baseline side-by-side datasets
+    $set24h = $data.Keys | Where-Object { $_ -match "24h" } | ForEach-Object { $data[$_] }
+    $set7d  = $data.Keys | Where-Object { $_ -match "7d" } | ForEach-Object { $data[$_] }
+    $set30d = $data.Keys | Where-Object { $_ -match "30d" } | ForEach-Object { $data[$_] }
+    if (-not $set24h) { $set24h = @($anchor) }
+    if (-not $set7d) { $set7d = @($anchor) }
+    if (-not $set30d) { $set30d = @($anchor) }
     
     # DF07 UserMismatch
     $baselineUsers = @()
@@ -586,6 +701,229 @@ Write-Host $decision
 Write-Host "`n=== STORY ==="
 if ($anchor) {
     Write-Host (Build-TicketStory -Anchor $anchor -DecisionBucket $decision -IsNewIP $isNewIP -IsNewLocation $isNewLoc -IsNewApp $isNewApp)
+}
+
+# --- HTML REPORT GENERATION ---
+if ($anchor) {
+    $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss_fff")
+    $safeUser = $anchor.Username -replace '[^a-zA-Z0-9]', '_'
+    $reportFileName = "$($timestamp)_$($safeUser)_RiskyUserAlert.html"
+    $reportPath = Join-Path $CaseFolder $reportFileName
+
+    $statusBadgeClass = if($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
+
+    $htmlHeader = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOC Triage Report - $($anchor.RequestId)</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --card-bg: #161b22;
+            --border: #30363d;
+            --text-primary: #f0f6fc;
+            --text-secondary: #8b949e;
+            --blue: #58a6ff;
+            --green: #3fb950;
+            --red: #f85149;
+            --orange: #d29922;
+        }
+        body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background-color: var(--bg); color: var(--text-primary); margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 20px; }
+        .badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; border: 1px solid transparent; }
+        .badge-success { background: rgba(63, 185, 80, 0.15); color: var(--green); border-color: var(--green); }
+        .badge-fail { background: rgba(248, 81, 73, 0.15); color: var(--red); border-color: var(--red); }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; position: relative; }
+        .card:hover { border-color: #8b949e; }
+        .label { color: var(--text-secondary); font-size: 11px; text-transform: uppercase; font-weight: 600; letter-spacing: 0.5px; display: block; margin-bottom: 6px; }
+        .value { font-size: 14px; font-weight: 500; word-break: break-all; font-family: 'Cascadia Code', 'Consolas', monospace; }
+        .copy-icon { cursor: pointer; float: right; opacity: 0.3; }
+        .copy-icon:hover { opacity: 1; }
+        .section-title { font-size: 14px; color: var(--blue); margin: 24px 0 12px 0; display: flex; align-items: center; gap: 8px; font-weight: 600; border-left: 4px solid var(--blue); padding-left: 10px; }
+        .decision-banner { background: var(--card-bg); border: 2px solid var(--blue); border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 20px; box-shadow: inset 0 0 20px rgba(88, 166, 255, 0.1); }
+        .decision-value { font-size: 32px; font-weight: 800; color: var(--blue); text-transform: uppercase; letter-spacing: 2px; text-shadow: 0 0 10px rgba(88, 166, 255, 0.3); }
+        .links { margin-top: 8px; display: flex; gap: 12px; }
+        .links a { color: var(--blue); text-decoration: none; font-size: 12px; }
+        .links a:hover { text-decoration: underline; }
+        .story-box { background: #0d1117; border-left: 4px solid var(--blue); padding: 16px; font-style: italic; color: var(--text-secondary); line-height: 1.5; }
+        .flaw-item { color: var(--orange); font-family: monospace; font-size: 13px; margin-bottom: 4px; }
+        .comparison-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+        .comparison-table th { background: #21262d; color: var(--blue); text-align: left; padding: 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+        .comparison-table td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
+        .comparison-table tr:last-child td { border-bottom: none; }
+        .comparison-table .val-col { color: var(--text-primary); font-family: monospace; font-weight: 600; }
+        .freq-cell { text-align: center; font-weight: 700; color: var(--blue); }
+        .freq-cell.zero { color: var(--text-secondary); opacity: 0.4; font-weight: 400; }
+        .anchor-row-highlight { background: rgba(88, 166, 255, 0.1) !important; border-left: 4px solid var(--blue); }
+    </style>
+    <script>
+        function copy(text) {
+            navigator.clipboard.writeText(text);
+            const msg = document.getElementById('copy-msg');
+            msg.innerText = 'Copied: ' + text;
+            msg.style.opacity = 1;
+            setTimeout(() => msg.style.opacity = 0, 2000);
+        }
+    </script>
+</head>
+<body>
+    <div id="copy-msg" style="position:fixed; top:20px; right:20px; background:var(--green); color:black; padding:8px 16px; border-radius:4px; opacity:0; transition:opacity 0.3s; pointer-events:none; z-index:1000; font-weight:600;"></div>
+    <div class="container">
+        <div class="header">
+            <div>
+                <h1 style="margin:0; font-size: 24px;">Risky User Analysis</h1>
+                <div style="color:var(--text-secondary); font-size: 13px; margin-top: 4px;">Request ID: <span class="value" style="color:var(--blue)">$($anchor.RequestId)</span></div>
+            </div>
+            <div class="badge $($statusBadgeClass)">$($anchor.Status)</div>
+        </div>
+
+        <div class="decision-banner">
+            <div class="label">Primary Decision</div>
+            <div class="decision-value">$($decision.ToUpper())</div>
+        </div>
+
+        <div class="section-title">TIME CONVERSIONS</div>
+        <div class="grid">
+            <div class="card"><span class="label">UTC</span><span class="value">$($utcTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+            <div class="card"><span class="label">EST (Eastern)</span><span class="value">$($estTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+            <div class="card"><span class="label">CST (Central)</span><span class="value">$($cstTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+        </div>
+
+        <div class="section-title">IDENTITY & NETWORK</div>
+        <div class="grid">
+            <div class="card">
+                <span class="copy-icon" onclick="copy('$($anchor.Username)')">COPY</span>
+                <span class="label">User</span><span class="value">$($anchor.Username)</span>
+                <div class="links">
+                    <a href="https://portal.azure.com/#view/Microsoft_AAD_IAM/UserDetailsMenuBlade/~/overview/userId/$($anchor.Username)" target="_blank">Entra Profile</a>
+                </div>
+            </div>
+            <div class="card">
+                <span class="copy-icon" onclick="copy('$($anchor.IPAddress)')">COPY</span>
+                <span class="label">IP Address</span><span class="value">$($anchor.IPAddress)</span>
+                <div class="links">
+                    <a href="https://www.virustotal.com/gui/ip-address/$($anchor.IPAddress)" target="_blank">VirusTotal</a>
+                    <a href="https://www.abuseipdb.com/check/$($anchor.IPAddress)" target="_blank">AbuseIPDB</a>
+                </div>
+            </div>
+            <div class="card">
+                <span class="label">Geo Detail</span>
+                <span class="value">$($anchor.City), $($anchor.State), $($anchor.Country)</span>
+                <div style="font-size:11px; color:var(--text-secondary); margin-top:4px;">Source: $($anchor.Location)</div>
+            </div>
+            <div class="card"><span class="label">Application</span><span class="value">$($anchor.Application)</span></div>
+        </div>
+
+        <div class="section-title">DEVICE & SECURITY</div>
+        <div class="grid">
+            <div class="card"><span class="label">MFA Result / CA</span><span class="value" style="color:var(--orange)">$($anchor.MfaResult) / $($anchor.ConditionalAccess)</span></div>
+            <div class="card"><span class="label">OS / Browser</span><span class="value">$($AnchorDevice.OperatingSystem) / $($AnchorDevice.Browser)</span></div>
+            <div class="card"><span class="label">Device ID</span><span class="value" style="font-size:11px;">$($AnchorDevice.DeviceId)</span></div>
+            <div class="card">
+                <span class="label">Compliance / Managed</span>
+                <span class="value">$($AnchorDevice.Compliant) / $($AnchorDevice.Managed)</span>
+                <div style="font-size:11px; color:var(--text-secondary); margin-top:4px;">Join: $($AnchorDevice.JoinType)</div>
+            </div>
+        </div>
+        <div class="card" style="margin-bottom:20px;">
+            <span class="label">Client App / User Agent</span>
+            <div class="value" style="color:var(--blue); margin-bottom:8px;">$($AnchorDevice.ClientApp)</div>
+            <div class="value" style="font-size:12px; line-height:1.4; font-family:monospace; color:var(--text-secondary);">$($AnchorDevice.UserAgent)</div>
+        </div>
+
+        <div class="section-title">STATISTICAL BASELINE (SIDE-BY-SIDE)</div>
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Attribute</th>
+                    <th>Anchor Value</th>
+                    <th style="text-align:center">24h Freq</th>
+                    <th style="text-align:center">7d Freq</th>
+                    <th style="text-align:center">30d Freq</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Device ID</td>
+                    <td class="val-col">$($AnchorDevice.DeviceId)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.DeviceId -Aliases $ColumnAliases["DeviceId"] -Datasets $set24h)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.DeviceId -Aliases $ColumnAliases["DeviceId"] -Datasets $set7d)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.DeviceId -Aliases $ColumnAliases["DeviceId"] -Datasets $set30d)</td>
+                </tr>
+                <tr>
+                    <td>IP Address</td>
+                    <td class="val-col">$($anchor.IPAddress)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $anchor.IPAddress -Aliases @("IP address") -Datasets $set24h)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $anchor.IPAddress -Aliases @("IP address") -Datasets $set7d)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $anchor.IPAddress -Aliases @("IP address") -Datasets $set30d)</td>
+                </tr>
+                <tr>
+                    <td>Location</td>
+                    <td class="val-col">$($anchor.Location)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $anchor.Location -Aliases @("Location") -Datasets $set24h)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $anchor.Location -Aliases @("Location") -Datasets $set7d)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $anchor.Location -Aliases @("Location") -Datasets $set30d)</td>
+                </tr>
+                <tr>
+                    <td>Application</td>
+                    <td class="val-col">$($anchor.Application)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $anchor.Application -Aliases @("Application") -Datasets $set24h)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $anchor.Application -Aliases @("Application") -Datasets $set7d)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $anchor.Application -Aliases @("Application") -Datasets $set30d)</td>
+                </tr>
+                <tr>
+                    <td>User Agent</td>
+                    <td class="val-col">$(if($AnchorDevice.UserAgent.Length -gt 30){$AnchorDevice.UserAgent.Substring(0,30) + "..."}else{$AnchorDevice.UserAgent})</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.UserAgent -Aliases $ColumnAliases["UserAgent"] -Datasets $set24h)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.UserAgent -Aliases $ColumnAliases["UserAgent"] -Datasets $set7d)</td>
+                    <td class="freq-cell">$(Get-Frequency -Value $AnchorDevice.UserAgent -Aliases $ColumnAliases["UserAgent"] -Datasets $set30d)</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="section-title">DEVICE CORRELATION MATRIX (ALL SEEN DEVICES)</div>
+        <table class="comparison-table">
+            <thead>
+                <tr>
+                    <th>Device ID</th>
+                    <th>Associated IPs</th>
+                    <th>Locations</th>
+                    <th>OS / Browser</th>
+                    <th>Posture / Type</th>
+                    <th>Top Apps</th>
+                    <th>Last Seen</th>
+                    <th style="text-align:center">Freq</th>
+                    <th style="text-align:center">24h</th>
+                    <th style="text-align:center">7d</th>
+                    <th style="text-align:center">30d</th>
+                </tr>
+            </thead>
+            <tbody>
+                $($matrixRows -join "`n")
+            </tbody>
+        </table>
+
+        <div class="section-title">INVESTIGATION STORY</div>
+        <div class="story-box">
+            $(Build-TicketStory -Anchor $anchor -DecisionBucket $decision -IsNewIP $isNewIP -IsNewLocation $isNewLoc -IsNewApp $isNewApp)
+        </div>
+
+        <div class="section-title">DESIGN FLAWS</div>
+        <div class="card">
+            $(if ($uniqueFlaws) { $uniqueFlaws | ForEach-Object { "<div class='flaw-item'>- $_</div>" } } else { "None Detected" })
+        </div>
+    </div>
+</body>
+</html>
+"@
+
+    $htmlHeader | Out-File -FilePath $reportPath -Encoding utf8
+    Write-Host "`nHTML Report generated at: $reportPath"
 }
 
 Write-Host "`nDONE"
