@@ -312,6 +312,11 @@ if ($anchor) {
         $designFlaws += "DF10 IPMissing"
     }
 
+    # DF11 AppMissing
+    if ([string]::IsNullOrWhiteSpace($anchor.Application)) {
+        $designFlaws += "DF11 AppMissing"
+    }
+
     # DF08 TimeWindowMismatch
     $minMax = @{}
     foreach ($key in $data.Keys) {
@@ -375,7 +380,7 @@ if ($anchor) {
 # --- DESIGN_FLAWS ---
 Write-Host "`n=== DESIGN_FLAWS ==="
 if ($designFlaws.Count -gt 0) {
-    # Ensure distinct codes and explicit line breaks
+    # Force each flaw onto a new line with explicit Write-Host calls
     $uniqueFlaws = @($designFlaws) | Select-Object -Unique
     foreach ($flaw in $uniqueFlaws) {
         if (-not [string]::IsNullOrWhiteSpace($flaw)) {
@@ -396,6 +401,9 @@ if ($designFlaws.Count -gt 0) {
     }
     if ($uniqueFlaws -match "DF10") {
         Write-Host "HINT: Anchor event is missing an IP address. This can happen with certain managed service identity or app-only sign-ins."
+    }
+    if ($uniqueFlaws -match "DF11") {
+        Write-Host "HINT: Anchor event is missing Application name. Verify if the sign-in was to a legacy or custom internal resource."
     }
 } else {
     Write-Host "None"
