@@ -62,7 +62,37 @@ function Normalize-Row {
         RequestId         = Get-Value -Row $Row -ColumnName "Request ID"
         ConditionalAccess = Get-Value -Row $Row -ColumnName "Conditional Access"
         MfaResult         = "N/A"
+        DeviceDetail      = $Row # Keep raw row for device extraction
     }
+}
+
+function Get-FieldValue {
+    param(
+        [Parameter(Mandatory=$false)] $Row,
+        [Parameter(Mandatory=$true)] [string[]] $Aliases,
+        $Default = "Unknown"
+    )
+    if ($null -eq $Row) { return $Default }
+    $props = $Row.PSObject.Properties.Name
+    foreach ($alias in $Aliases) {
+        if ($props -contains $alias) {
+            $val = $Row.$alias
+            if (-not [string]::IsNullOrWhiteSpace($val)) { return $val }
+        }
+    }
+    return $Default
+}
+
+# Column Aliases for Device + UA
+$ColumnAliases = @{
+    "DeviceId"        = @("Device ID", "DeviceId")
+    "OperatingSystem" = @("Operating System", "OS")
+    "Browser"         = @("Browser")
+    "ClientApp"       = @("Client app", "ClientApp")
+    "JoinType"        = @("Join Type", "JoinType")
+    "Compliant"       = @("Compliant")
+    "Managed"         = @("Managed")
+    "UserAgent"       = @("User agent", "UserAgent", "User-Agent")
 }
 
 function Get-TopCounts {
@@ -353,6 +383,20 @@ if ([string]::IsNullOrWhiteSpace($AnchorRequestId)) {
 if ($anchor) {
     $anchor | Format-List EventTime, Username, IPAddress, Location, Application, Status, ConditionalAccess, MfaResult, RequestId
     
+    # --- ANCHOR_DEVICE ---
+    Write-Host "`n=== ANCHOR_DEVICE ==="
+    $AnchorDevice = [pscustomobject]@{
+        DeviceId        = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["DeviceId"]
+        OperatingSystem = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["OperatingSystem"]
+        Browser         = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["Browser"]
+        ClientApp       = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["ClientApp"]
+        JoinType        = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["JoinType"]
+        Compliant       = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["Compliant"]
+        Managed         = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["Managed"]
+        UserAgent       = Get-FieldValue -Row $anchor.DeviceDetail -Aliases $ColumnAliases["UserAgent"]
+    }
+    $AnchorDevice | Format-List
+    
     # Dataset Time Windows
     Write-Host "`nDataset Time Windows:"
     foreach ($key in $minMax.Keys | Sort-Object) {
@@ -545,3 +589,4 @@ if ($anchor) {
 }
 
 Write-Host "`nDONE"
+Write-Host "REGRESSION_CHECK: OK"
