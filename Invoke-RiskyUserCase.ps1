@@ -369,6 +369,13 @@ if ($data30d) {
     Get-TopCounts -Events $data30d -PropertyName "IPAddress" | Format-Table -AutoSize
 }
 
+# DF12 TooFewEventsForBaseline
+$count7d = if ($data7d) { @($data7d).Count } else { 0 }
+$count30d = if ($data30d) { @($data30d).Count } else { 0 }
+if ($count7d -lt 25 -or $count30d -lt 100) {
+    $designFlaws += "DF12 TooFewEventsForBaseline (7d: $count7d, 30d: $count30d)"
+}
+
 # --- NOVELTY ---
 Write-Host "`n=== NOVELTY ==="
 $isNewIP = $false; $isNewLoc = $false; $isNewApp = $false
@@ -404,6 +411,9 @@ if ($designFlaws.Count -gt 0) {
     }
     if ($uniqueFlaws -match "DF11") {
         Write-Host "HINT: Anchor event is missing Application name. Verify if the sign-in was to a legacy or custom internal resource."
+    }
+    if ($uniqueFlaws -match "DF12") {
+        Write-Host "HINT: Baseline event counts are low. Novelty detection may be less reliable until more historical data is provided."
     }
 } else {
     Write-Host "None"
