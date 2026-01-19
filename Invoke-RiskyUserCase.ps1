@@ -283,13 +283,25 @@ if ($foundFiles.Count -eq 0) {
                 $designFlaws += "DF18 ExportTypeMismatch ($($file.Name): Found Date in Non-Interactive file)"
             }
 
-            $raw = Import-Csv $file.FullName -ErrorAction Stop
+            # Robust Import-Csv handling duplicate headers (e.g. "Incoming token type")
+            $raw = try { 
+                Import-Csv $file.FullName -ErrorAction Stop 
+            } catch {
+                $rawContent = Get-Content $file.FullName
+                $headerList = ($rawContent[0] -split ",").Trim()
+                $seen = @{}; $sanitizedHeaders = foreach ($h in $headerList) {
+                    $name = if ([string]::IsNullOrWhiteSpace($h)) { "BlankHeader" } else { $h }
+                    if ($seen.ContainsKey($name)) { $seen[$name]++; "$name`_$($seen[$name])" } else { $seen[$name] = 1; $name }
+                }
+                $rawContent | Select-Object -Skip 1 | ConvertFrom-Csv -Header $sanitizedHeaders
+            }
             
-            # DF03 Column Validation
-            if ($file.Name -match "InteractiveSignIns" -and $file.Name -notmatch "AuthDetails") {
+            # Fix dataset detection to exclude AuthDetails from sign-in validation
+            $isAuth = $file.Name -match "AuthDetails"
+            if ($file.Name -match "InteractiveSignIns" -and -not $isAuth) {
                 Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
             }
-            elseif ($file.Name -match "NonInteractive") {
+            elseif ($file.Name -match "NonInteractive" -and -not $isAuth) {
                 Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date (UTC)", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
             }
 
