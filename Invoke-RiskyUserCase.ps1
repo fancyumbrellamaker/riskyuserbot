@@ -225,8 +225,8 @@ if ($foundFiles.Count -eq 0) {
                     $ids = $raw | Select-Object -ExpandProperty "Request ID" -Unique
                     $authIds = $authRaw | Select-Object -ExpandProperty "Request ID" -Unique
                     $matches = $ids | Where-Object { $_ -in $authIds }
-                    $rate = if ($ids.Count -gt 0) { ($matches.Count / $ids.Count) * 100 } else { 0 }
-                    if ($rate -lt 20) {
+                    $rate = if ($ids.Count -gt 0) { ($matches.Count / $ids.Count) * 100 } else { 100 }
+                    if ($ids.Count -gt 0 -and $rate -lt 20) {
                         $designFlaws += "DF06 JoinRateLow ($($file.Name): $([math]::Round($rate))%)"
                     }
                 }
@@ -302,6 +302,11 @@ if ($anchor) {
         }
     }
 
+    # DF09 LocationMissing
+    if ([string]::IsNullOrWhiteSpace($anchor.Location) -or $anchor.Location -ieq "Unknown") {
+        $designFlaws += "DF09 LocationMissing (IP: $($anchor.IPAddress))"
+    }
+
     # DF08 TimeWindowMismatch
     $minMax = @{}
     foreach ($key in $data.Keys) {
@@ -365,15 +370,24 @@ if ($anchor) {
 # --- DESIGN_FLAWS ---
 Write-Host "`n=== DESIGN_FLAWS ==="
 if ($designFlaws.Count -gt 0) {
-    $designFlaws | Select-Object -Unique | ForEach-Object { Write-Host " - $_" }
-    if ($designFlaws -contains "DF01 MissingFiles") {
+    # Ensure distinct codes and explicit line breaks
+    $uniqueFlaws = @($designFlaws) | Select-Object -Unique
+    foreach ($flaw in $uniqueFlaws) {
+        if (-not [string]::IsNullOrWhiteSpace($flaw)) {
+            Write-Host " - $flaw"
+        }
+    }
+    if ($uniqueFlaws -match "DF01") {
         Write-Host "HINT: Export sign-in logs CSVs and place them in the CaseFolder."
     }
-    if ($designFlaws -match "DF06") {
+    if ($uniqueFlaws -match "DF06") {
         Write-Host "HINT: Join rate is low. Re-export both CSVs ensuring the same Time Range and Filters (e.g. User or Request ID) are applied to both Sign-ins and AuthDetails."
     }
-    if ($designFlaws -contains "DF08 TimeWindowMismatch") {
+    if ($uniqueFlaws -match "DF08") {
         Write-Host "HINT: Baseline files appear to contain data from a different time period than the anchor."
+    }
+    if ($uniqueFlaws -match "DF09") {
+        Write-Host "HINT: Anchor event is missing location data. Check if IP address is from a known VPN or datacenter."
     }
 } else {
     Write-Host "None"
