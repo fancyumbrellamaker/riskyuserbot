@@ -307,6 +307,11 @@ if ($anchor) {
         $designFlaws += "DF09 LocationMissing (IP: $($anchor.IPAddress))"
     }
 
+    # DF10 IPMissing
+    if ([string]::IsNullOrWhiteSpace($anchor.IPAddress)) {
+        $designFlaws += "DF10 IPMissing"
+    }
+
     # DF08 TimeWindowMismatch
     $minMax = @{}
     foreach ($key in $data.Keys) {
@@ -388,6 +393,9 @@ if ($designFlaws.Count -gt 0) {
     }
     if ($uniqueFlaws -match "DF09") {
         Write-Host "HINT: Anchor event is missing location data. Check if IP address is from a known VPN or datacenter."
+    }
+    if ($uniqueFlaws -match "DF10") {
+        Write-Host "HINT: Anchor event is missing an IP address. This can happen with certain managed service identity or app-only sign-ins."
     }
 } else {
     Write-Host "None"
