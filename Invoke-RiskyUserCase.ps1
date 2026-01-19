@@ -472,7 +472,16 @@ if ($anchor) {
     $AnchorDevice | Format-List
     
     # Timezone Conversions (Force UTC source)
-    $utcTime = if ($anchor.EventTime -is [datetime]) { $anchor.EventTime.ToUniversalTime() } else { [datetime]::UtcNow }
+    $utcTime = [datetime]::UtcNow # Absolute fallback
+    if ($anchor.EventTime -is [datetime]) {
+        $utcTime = [datetime]::SpecifyKind($anchor.EventTime, [System.DateTimeKind]::Utc)
+    } elseif ($anchor.EventTime -is [string] -and -not [string]::IsNullOrWhiteSpace($anchor.EventTime)) {
+        $parsed = Parse-EventTime $anchor.EventTime
+        if ($parsed) { 
+            # Force kind to UTC if the string doesn't specify it
+            $utcTime = [datetime]::SpecifyKind($parsed, [System.DateTimeKind]::Utc) 
+        }
+    }
     
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
