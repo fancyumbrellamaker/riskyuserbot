@@ -562,6 +562,10 @@ if ($anchor) {
     $ppUntil = $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
     $ppUser  = [uri]::EscapeDataString($anchor.Username)
 
+    # Lansweeper User Pivot Logic
+    $truncatedUser = $anchor.Username.Split('@')[0]
+    $lsUserUrl = "https://mxpcorls01:82/user.aspx?username=$truncatedUser&userdomain=MAXOR"
+
     $ipVal = $anchor.IPAddress
     $prefixInfo = ""
     $prefix64 = "N/A"
@@ -1146,11 +1150,11 @@ if ($anchor) {
                 </div>
             </div>
             <div class="card">
-                <span class="label">Lansweeper (Manual Pivot)</span>
+                <span class="label">Lansweeper (User Profile)</span>
                 <div class="links" style="margin-top:10px;">
-                    <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Target Host: <span style="color:var(--green)">$($AnchorDevice.DeviceId)</span> <span class="copy-icon" onclick="copy('$($AnchorDevice.DeviceId)')">COPY</span></div>
-                    <a href="http://mxpcorls01:82/Default.aspx" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Open Lansweeper Dashboard</a>
-                    <div style="font-size:10px; color:var(--text-secondary); margin-top:8px;">Note: AssetID is calculated on vendor backend. Open dashboard and paste hostname into search.</div>
+                    <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Target User: <span style="color:var(--green)">$truncatedUser</span> <span class="copy-icon" onclick="copy('$truncatedUser')">COPY</span></div>
+                    <a href="$lsUserUrl" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">View User in Lansweeper</a>
+                    <div style="font-size:10px; color:var(--text-secondary); margin-top:8px;">Truncated from: $($anchor.Username)</div>
                 </div>
             </div>
             <div class="card span-2">
