@@ -122,8 +122,27 @@ function Build-TicketStory {
 function Test-Columns {
     param($RawData, $RequiredCols, $DatasetName)
     if ($null -eq $RawData -or $RawData.Count -eq 0) { return }
-    $headers = $RawData[0].PSObject.Properties.Name
-    $missing = $RequiredCols | Where-Object { $_ -notin $headers }
+    
+    # Get headers and strip BOM/special chars from the first header if present
+    $headers = $RawData[0].PSObject.Properties.Name | ForEach-Object { 
+        $h = $_.Trim()
+        # Remove common BOM patterns from the start of the first header
+        $h = $h -replace "^[^\w]*Date", "Date"
+        $h
+    }
+    
+    $missing = @()
+    foreach ($req in $RequiredCols) {
+        $found = $false
+        foreach ($h in $headers) {
+            if ($h -match [regex]::Escape($req) -or $h -ieq $req) {
+                $found = $true
+                break
+            }
+        }
+        if (-not $found) { $missing += $req }
+    }
+
     if ($missing) {
         $script:designFlaws += "DF03 MissingColumns ($DatasetName)"
         Write-Host "ERROR: Dataset '$DatasetName' missing columns: $($missing -join ', ')"
@@ -258,6 +277,24 @@ if ([string]::IsNullOrWhiteSpace($AnchorRequestId)) {
 
 if ($anchor) {
     $anchor | Format-List EventTime, Username, IPAddress, Location, Application, Status, ConditionalAccess, MfaResult, RequestId
+    
+    # DF07 UserMismatch
+    $baselineUsers = @()
+    if ($data.ContainsKey("InteractiveSignIns_7d.csv")) { 
+        $list = $data["InteractiveSignIns_7d.csv"] | ForEach-Object { $_.Username }
+        if ($list) { $baselineUsers += $list }
+    }
+    if ($data.ContainsKey("InteractiveSignIns_30d.csv")) { 
+        $list = $data["InteractiveSignIns_30d.csv"] | ForEach-Object { $_.Username }
+        if ($list) { $baselineUsers += $list }
+    }
+    
+    if ($baselineUsers) {
+        $uniqueBaselineUsers = $baselineUsers | Select-Object -Unique
+        if ($anchor.Username -and $anchor.Username -notin $uniqueBaselineUsers) {
+            $designFlaws += "DF07 UserMismatch ($($anchor.Username) not in baseline)"
+        }
+    }
 } else {
     if (-not [string]::IsNullOrWhiteSpace($AnchorRequestId)) {
         $designFlaws += "DF05 AnchorNotFound"
@@ -298,7 +335,7 @@ if ($anchor) {
 # --- DESIGN_FLAWS ---
 Write-Host "`n=== DESIGN_FLAWS ==="
 if ($designFlaws.Count -gt 0) {
-    $designFlaws | Select-Object -Unique | ForEach-Object { Write-Host $_ }
+    $designFlaws | Select-Object -Unique | ForEach-Object { Write-Host " - $_" }
     if ($designFlaws -contains "DF01 MissingFiles") {
         Write-Host "HINT: Export sign-in logs CSVs and place them in the CaseFolder."
     }
