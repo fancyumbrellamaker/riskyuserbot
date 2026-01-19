@@ -764,7 +764,9 @@ if ($anchor) {
 if ($anchor) {
     # SOC Integration Config
     $rapid7OrgId = "682B861F32ACBF7D3060"
-    $rapid7LogList = "%5B%22c2c5b61220-80a1-4677-b36e-83fc86092c47%22%2C%22221c359b3d-d2a2-4232-982e-afd455716e75%22%2C%222296f5927c-965c-40ce-b85c-bc79a111a7a6%22%2C%22965cf40ce-b85c-bc79a111a7a6%22%2C%22222414af47-f158-42d2-898d-90033cf24911%22%2C%222227f09920-0ecf-4a77-aa19-6dc69f64ecac%22%2C%2222c224f1fc22a-53f8-4025-9fba-647b229ed064%22%2C%222284557d54-12b5-43ca-b1d2-f089a5e62d45%22%2C%2222c22a7ae10a0-deca-419a-9e7c-502c6e778241%22%5D" # Truncated but functional list from your export
+    # Target: "Ingress Authentication / Microsoft Azure"
+    $rapid7LogList = "%5B%222186bedc4-1ee4-4728-a970-43575fb22d9d%22%5D" 
+    $encodedIP = [uri]::EscapeDataString($anchor.IPAddress)
 
     $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss_fff")
     $safeUser = $anchor.Username -replace '[^a-zA-Z0-9]', '_'
@@ -991,9 +993,9 @@ if ($anchor) {
                 </div>
             </div>
             <div class="card span-2">
-                <span class="label">Rapid7 InsightIDR (LEQL)</span>
+                <span class="label">Rapid7 InsightIDR (Azure Ingress)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($($anchor.IPAddress))&range=Last%2030%20Days" target="_blank" style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Global Log Search (30D)</a>
+                    <a href="https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)&range=Last%2014%20Days" target="_blank" style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">View Azure Ingress Logs (14D)</a>
                 </div>
             </div>
         </div>
