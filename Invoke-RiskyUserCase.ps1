@@ -370,6 +370,13 @@ if ($anchor) {
         $designFlaws += "DF16 ConditionalAccessUnknown"
     }
 
+    # DF17 MFAUnknown
+    $isMfaBlank = [string]::IsNullOrWhiteSpace($anchor.MfaResult) -or $anchor.MfaResult -in @("Unknown", "N/A")
+    $isAuthMissingOrLow = (-not $presence["AuthDetails"]) -or ($designFlaws -match "DF06")
+    if ($isMfaBlank -and $isAuthMissingOrLow) {
+        $designFlaws += "DF17 MFAUnknown"
+    }
+
     # DF08 TimeWindowMismatch
     $minMax = @{}
     foreach ($key in $data.Keys) {
@@ -479,6 +486,9 @@ if ($designFlaws.Count -gt 0) {
     }
     if ($uniqueFlaws -match "DF16") {
         Write-Host "HINT: Conditional Access status is not available. Review the Azure AD sign-in logs for policy details."
+    }
+    if ($uniqueFlaws -match "DF17") {
+        Write-Host "HINT: MFA result is unknown. This typically means the AuthDetails CSV was missing or didn't contain matching Request IDs for the anchor event."
     }
 } else {
     Write-Host "None"
