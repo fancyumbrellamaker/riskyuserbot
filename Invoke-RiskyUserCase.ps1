@@ -199,6 +199,19 @@ if ($foundFiles.Count -eq 0) {
                 $designFlaws += "DF14 DuplicateHeaders ($($file.Name): $($duplicates.Name -join ', '))"
             }
 
+            # DF18 ExportTypeMismatch
+            $isInteractiveName = $file.Name -match "^InteractiveSignIns" -and $file.Name -notmatch "AuthDetails"
+            $isNonInteractiveName = $file.Name -match "^NonInteractive"
+            $hasDate = $headerList -contains "Date"
+            $hasDateUtc = $headerList -contains "Date (UTC)"
+
+            if ($isInteractiveName -and $hasDateUtc -and -not $hasDate) {
+                $designFlaws += "DF18 ExportTypeMismatch ($($file.Name): Found Date (UTC) in Interactive file)"
+            }
+            if ($isNonInteractiveName -and $hasDate -and -not $hasDateUtc) {
+                $designFlaws += "DF18 ExportTypeMismatch ($($file.Name): Found Date in Non-Interactive file)"
+            }
+
             $raw = Import-Csv $file.FullName -ErrorAction Stop
             
             # DF03 Column Validation
@@ -489,6 +502,9 @@ if ($designFlaws.Count -gt 0) {
     }
     if ($uniqueFlaws -match "DF17") {
         Write-Host "HINT: MFA result is unknown. This typically means the AuthDetails CSV was missing or didn't contain matching Request IDs for the anchor event."
+    }
+    if ($uniqueFlaws -match "DF18") {
+        Write-Host "HINT: Export type mismatch detected. Entra CSV headers don't match the filename. Verify you didn't rename the files incorrectly."
     }
 } else {
     Write-Host "None"
