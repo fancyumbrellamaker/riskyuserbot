@@ -94,12 +94,13 @@ function Get-ScopeButtons {
         $end   = $TimeObj.AddSeconds($s.Offset)
         
         if ($ToolType -eq "CS") {
-            $f = ([datetimeoffset]$start).ToUnixTimeSeconds()
-            $t = ([datetimeoffset]$end).ToUnixTimeSeconds()
-            $url = $BaseUrl + "&earliest=$f&latest=$t"
+            # CrowdStrike Advanced Event Search uses 13-digit millisecond epochs
+            $f = [long]([datetimeoffset]::new($start).ToUnixTimeMilliseconds())
+            $t = [long]([datetimeoffset]::new($end).ToUnixTimeMilliseconds())
+            $url = $BaseUrl + "&start=$f&end=$t"
         } else {
-            $f = [long]([datetimeoffset]$start).ToUnixTimeMilliseconds()
-            $t = [long]([datetimeoffset]$end).ToUnixTimeMilliseconds()
+            $f = [long]([datetimeoffset]::new($start).ToUnixTimeMilliseconds())
+            $t = [long]([datetimeoffset]::new($end).ToUnixTimeMilliseconds())
             $url = $BaseUrl + "&from=$f&to=$t"
         }
         $html += "<a href='$url' target='_blank' class='scope-btn'>$($s.Label)</a>"
@@ -1069,11 +1070,13 @@ if ($anchor) {
         <div class="section-title">SOC TOOLBOX (ONE-CLICK PIVOT)</div>
         <div class="grid">
             <div class="card">
-                <span class="label">CrowdStrike EDR (Events)</span>
+                <span class="label">CrowdStrike EDR (Advanced Search)</span>
                 <div class="links" style="margin-top:10px;">
                     <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Process Storyline for: $($AnchorDevice.DeviceId)</div>
                     $(
-                        $csBase = "https://falcon.us-2.crowdstrike.com/investigate/events/en-US/app/eactums/default?filter=computer_name:'$($AnchorDevice.DeviceId)'"
+                        # New Advanced Search URL Schema with high-value SOC table query
+                        $cqlQuery = [uri]::EscapeDataString("ComputerName='$($AnchorDevice.DeviceId)' | table @timestamp, ComputerName, UserName, event_simpleName, ImageFileName, CommandLine, LocalAddressIP, RemoteAddressIP")
+                        $csBase = "https://falcon.us-2.crowdstrike.com/investigate/search?repo=all&query=$cqlQuery"
                         Get-ScopeButtons -BaseUrl $csBase -ToolType "CS" -TimeObj $utcTime
                     )
                 </div>
