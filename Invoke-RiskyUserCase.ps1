@@ -28,20 +28,9 @@ function Get-Value {
     )
     if ($null -eq $Row) { return $null }
     
-    # Performance: Direct access first
-    try { 
-        $val = $Row.$ColumnName
-        if ($null -ne $val) { return $val }
-    } catch { }
-    
-    # Fallbacks for common Entra variations
-    $props = $Row.PSObject.Properties.Name
-    if ($ColumnName -eq "Date" -and ($props -contains "Date (UTC)")) { return $Row."Date (UTC)" }
-    if ($ColumnName -eq "IP address" -and ($props -contains "IPAddress")) { return $Row.IPAddress }
-    if ($ColumnName -eq "Request ID" -and ($props -contains "RequestId")) { return $Row.RequestId }
-    if ($ColumnName -eq "Conditional Access" -and ($props -contains "ConditionalAccess")) { return $Row.ConditionalAccess }
-    
-    return $null
+    # Use the hardened Get-FieldValue logic for core values too
+    # This handles "Request ID" vs "RequestID" vs "requestid" automatically
+    return Get-FieldValue -Row $Row -Aliases @($ColumnName, ($ColumnName -replace ' ', '')) -Default $null
 }
 
 function Parse-EventTime {
@@ -363,8 +352,8 @@ if ($foundFiles.Count -eq 0) {
                 $authKey = $file.Name.Replace("InteractiveSignIns", "InteractiveSignIns_AuthDetails")
                 if (Test-Path (Join-Path $CaseFolder $authKey)) {
                     $authRaw = Import-Csv (Join-Path $CaseFolder $authKey)
-                    $ids = $raw | Select-Object -ExpandProperty "Request ID" -Unique
-                    $authIds = $authRaw | Select-Object -ExpandProperty "Request ID" -Unique
+                    $ids = $raw | ForEach-Object { Get-Value -Row $_ -ColumnName "Request ID" } | Where-Object { $_ } | Select-Object -Unique
+                    $authIds = $authRaw | ForEach-Object { Get-Value -Row $_ -ColumnName "Request ID" } | Where-Object { $_ } | Select-Object -Unique
                     $matches = $ids | Where-Object { $_ -in $authIds }
                     $rate = if ($ids.Count -gt 0) { ($matches.Count / $ids.Count) * 100 } else { 100 }
                     if ($ids.Count -gt 0 -and $rate -lt 20) {
