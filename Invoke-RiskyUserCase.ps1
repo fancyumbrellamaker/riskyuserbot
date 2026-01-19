@@ -92,13 +92,12 @@ function Get-ScopeButtons {
     $start1m = ([datetimeoffset]::new($TimeObj.AddSeconds(-30))).ToUnixTimeMilliseconds()
     $end1m   = ([datetimeoffset]::new($TimeObj.AddSeconds(30))).ToUnixTimeMilliseconds()
     if ($ToolType -eq "CS") {
-        # CrowdStrike uses millisecond epochs for Advanced Search
         $primaryUrl = $BaseUrl + "&start=$start1m&end=$end1m"
+        $html = "<a href='$primaryUrl' target='_blank' class='primary-pivot-btn' id='primary-cs-pivot' data-time-params='&start=$start1m&end=$end1m'>PIVOT TO EXACT MINUTE</a>"
     } else {
         $primaryUrl = $BaseUrl + "&from=$start1m&to=$end1m"
+        $html = "<a href='$primaryUrl' target='_blank' class='primary-pivot-btn' id='primary-r7-pivot' data-time-params='&from=$start1m&to=$end1m'>PIVOT TO EXACT MINUTE</a>"
     }
-
-    $html = "<a href='$primaryUrl' target='_blank' class='primary-pivot-btn'>PIVOT TO EXACT MINUTE</a>"
     $html += "<div style='font-size:10px; color:var(--text-secondary); margin: 8px 0 4px 0;'>EXPAND TIMELINE:</div>"
     $html += "<div class='scope-group'>"
     foreach ($s in $scopes) {
@@ -109,12 +108,13 @@ function Get-ScopeButtons {
             $f = [long]([datetimeoffset]::new($start).ToUnixTimeMilliseconds())
             $t = [long]([datetimeoffset]::new($end).ToUnixTimeMilliseconds())
             $url = $BaseUrl + "&start=$f&end=$t"
+            $html += "<a href='$url' target='_blank' class='scope-btn cs-scope-btn' data-time-params='&start=$f&end=$t'>$($s.Label)</a>"
         } else {
             $f = [long]([datetimeoffset]::new($start).ToUnixTimeMilliseconds())
             $t = [long]([datetimeoffset]::new($end).ToUnixTimeMilliseconds())
             $url = $BaseUrl + "&from=$f&to=$t"
+            $html += "<a href='$url' target='_blank' class='scope-btn r7-scope-btn' data-time-params='&from=$f&to=$t'>$($s.Label)</a>"
         }
-        $html += "<a href='$url' target='_blank' class='scope-btn'>$($s.Label)</a>"
     }
     return $html + "</div>"
 }
@@ -916,6 +916,28 @@ if ($anchor) {
             msg.style.opacity = 1;
             setTimeout(() => msg.style.opacity = 0, 2000);
         }
+
+        function updateDynamicPivots(newName) {
+            if(!newName) return;
+            const csBase = "https://falcon.us-2.crowdstrike.com/investigate/search?repo=all&query=" + encodeURIComponent("ComputerName='" + newName + "' | table @timestamp, ComputerName, UserName, event_simpleName, ImageFileName, CommandLine, LocalAddressIP, RemoteAddressIP");
+            
+            // Update all scope buttons for CrowdStrike
+            document.querySelectorAll('.cs-scope-btn').forEach(btn => {
+                const timeParams = btn.getAttribute('data-time-params');
+                btn.href = csBase + timeParams;
+            });
+            
+            // Update the primary PIVOT button for CS
+            const primaryCs = document.getElementById('primary-cs-pivot');
+            if(primaryCs) primaryCs.href = csBase + primaryCs.getAttribute('data-time-params');
+
+            // Update host details link
+            const hostDetails = document.getElementById('cs-host-details');
+            if(hostDetails) hostDetails.href = "https://falcon.us-2.crowdstrike.com/host-management/hosts?filter=hostname%233A%27" + newName + "%27";
+            
+            document.getElementById('current-target-display').innerText = newName;
+            document.getElementById('current-target-display').style.color = "var(--green)";
+        }
     </script>
 </head>
 <body>
@@ -1081,6 +1103,20 @@ if ($anchor) {
         </div>
 
         <div class="section-title">SOC TOOLBOX (ONE-CLICK PIVOT)</div>
+        
+        <div class="card" style="grid-column: span 4; border: 1px dashed var(--blue); background: rgba(88, 166, 255, 0.05); margin-bottom: 15px;">
+            <span class="label" style="color:var(--blue)">Dynamic Investigator (Manual Host Override)</span>
+            <div style="display:flex; gap:10px; align-items:center; margin-top:10px;">
+                <input type="text" id="host-override" placeholder="Paste computer name from Lansweeper..." 
+                       style="flex-grow:1; background:#0d1117; border:1px solid var(--border); color:white; padding:8px; border-radius:4px; font-family:monospace;">
+                <button onclick="updateDynamicPivots(document.getElementById('host-override').value)" 
+                        style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; cursor:pointer; font-weight:bold;">UPDATE PIVOTS</button>
+            </div>
+            <div style="font-size:11px; margin-top:8px; color:var(--text-secondary);">
+                Active Pivot Target: <span id="current-target-display" style="color:var(--blue); font-weight:bold;">$($AnchorDevice.DeviceId)</span>
+            </div>
+        </div>
+
         <div class="grid">
             <div class="card">
                 <span class="label">CrowdStrike EDR (Advanced Search)</span>
@@ -1093,7 +1129,7 @@ if ($anchor) {
                         Get-ScopeButtons -BaseUrl $csBase -ToolType "CS" -TimeObj $utcTime
                     )
                     <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:8px;">
-                        <a href="https://falcon.us-2.crowdstrike.com/host-management/hosts?filter=hostname%233A%27$($AnchorDevice.DeviceId)%27" target="_blank" style="color:var(--blue); font-size:11px; text-decoration:none;">View Host Details Page</a>
+                        <a href="https://falcon.us-2.crowdstrike.com/host-management/hosts?filter=hostname%233A%27$($AnchorDevice.DeviceId)%27" id="cs-host-details" target="_blank" style="color:var(--blue); font-size:11px; text-decoration:none;">View Host Details Page</a>
                     </div>
                 </div>
             </div>
