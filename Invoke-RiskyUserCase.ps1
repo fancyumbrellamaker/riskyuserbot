@@ -27,10 +27,15 @@ function Get-Value {
         [Parameter(Mandatory=$true)] [string] $ColumnName
     )
     if ($null -eq $Row) { return $null }
-    $props = $Row.PSObject.Properties.Name
-    if ($props -contains $ColumnName) { return $Row.$ColumnName }
     
-    # Robust fallback for common Entra CSV variations
+    # Performance: Direct access first
+    try { 
+        $val = $Row.$ColumnName
+        if ($null -ne $val) { return $val }
+    } catch { }
+    
+    # Fallbacks for common Entra variations
+    $props = $Row.PSObject.Properties.Name
     if ($ColumnName -eq "Date" -and ($props -contains "Date (UTC)")) { return $Row."Date (UTC)" }
     if ($ColumnName -eq "IP address" -and ($props -contains "IPAddress")) { return $Row.IPAddress }
     if ($ColumnName -eq "Request ID" -and ($props -contains "RequestId")) { return $Row.RequestId }
@@ -181,6 +186,17 @@ if ($foundFiles.Count -eq 0) {
 } else {
     foreach ($file in $foundFiles) {
         try {
+            # DF14 DuplicateHeaders Check (Before Import-Csv)
+            $rawHeaders = Get-Content $file.FullName -TotalCount 1
+            if ($rawHeaders -match ",,") {
+                $designFlaws += "DF14 DuplicateHeaders ($($file.Name): Blank header detected)"
+            }
+            $headerList = ($rawHeaders -split ",").Trim()
+            $duplicates = $headerList | Group-Object | Where-Object { $_.Count -gt 1 }
+            if ($duplicates) {
+                $designFlaws += "DF14 DuplicateHeaders ($($file.Name): $($duplicates.Name -join ', '))"
+            }
+
             $raw = Import-Csv $file.FullName -ErrorAction Stop
             
             # DF03 Column Validation
@@ -191,16 +207,33 @@ if ($foundFiles.Count -eq 0) {
                 Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date (UTC)", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
             }
 
-            # DF04 Date Parse Tracking
+            # DF04 Date Parse Tracking + Normalization (Single Pass)
             $dateCol = if ($file.Name -match "NonInteractive") { "Date (UTC)" } else { "Date" }
             $failCount = 0; $samples = @()
+            $normalized = New-Object System.Collections.Generic.List[pscustomobject]
+            
             foreach ($r in $raw) {
-                $v = Get-Value -Row $r -ColumnName $dateCol
-                if ($null -eq (Parse-EventTime $v) -and -not [string]::IsNullOrWhiteSpace($v)) {
+                $dtValue = Get-Value -Row $r -ColumnName $dateCol
+                $dt = Parse-EventTime $dtValue
+                
+                if ($null -eq $dt -and -not [string]::IsNullOrWhiteSpace($dtValue)) {
                     $failCount++
-                    if ($samples.Count -lt 3) { $samples += $v }
+                    if ($samples.Count -lt 3) { $samples += $dtValue }
                 }
+                
+                $normalized.Add([pscustomobject]@{
+                    Username          = Get-Value -Row $r -ColumnName "Username"
+                    EventTime         = $dt
+                    Application       = Get-Value -Row $r -ColumnName "Application"
+                    Status            = Get-Value -Row $r -ColumnName "Status"
+                    IPAddress         = Get-Value -Row $r -ColumnName "IP address"
+                    Location          = Get-Value -Row $r -ColumnName "Location"
+                    RequestId         = Get-Value -Row $r -ColumnName "Request ID"
+                    ConditionalAccess = Get-Value -Row $r -ColumnName "Conditional Access"
+                    MfaResult         = "N/A"
+                })
             }
+
             if ($raw.Count -gt 0 -and ($failCount / $raw.Count) -gt 0.3) {
                 $designFlaws += "DF04 DateParseFailure ($($file.Name))"
                 Write-Host "ERROR: Dataset '$($file.Name)' date parse failure rate: $([math]::Round(($failCount/$raw.Count)*100))%. Samples: $($samples -join ', ')"
@@ -209,8 +242,10 @@ if ($foundFiles.Count -eq 0) {
             if ($null -eq $raw -or $raw.Count -eq 0) {
                 $designFlaws += "DF02 EmptyDataset ($($file.Name))"
             }
+            if ($raw.Count -gt 50000) {
+                $designFlaws += "DF13 TooManyEventsTruncated ($($file.Name): $($raw.Count) rows)"
+            }
             # Store normalized data for datasets
-            $normalized = $raw | ForEach-Object { Normalize-Row $_ }
             $data[$file.Name] = $normalized
             Write-Host "Loaded: $($file.Name) ($($raw.Count) rows)"
             
@@ -391,7 +426,7 @@ if ($designFlaws.Count -gt 0) {
     $uniqueFlaws = @($designFlaws) | Select-Object -Unique
     foreach ($flaw in $uniqueFlaws) {
         if (-not [string]::IsNullOrWhiteSpace($flaw)) {
-            Write-Host " - $flaw"
+            [Console]::WriteLine(" - " + $flaw)
         }
     }
     if ($uniqueFlaws -match "DF01") {
@@ -414,6 +449,12 @@ if ($designFlaws.Count -gt 0) {
     }
     if ($uniqueFlaws -match "DF12") {
         Write-Host "HINT: Baseline event counts are low. Novelty detection may be less reliable until more historical data is provided."
+    }
+    if ($uniqueFlaws -match "DF13") {
+        Write-Host "HINT: Dataset is very large. Consider exporting a smaller time window or filtering to a specific user to improve performance."
+    }
+    if ($uniqueFlaws -match "DF14") {
+        Write-Host "HINT: Duplicate or blank headers detected. Check the first row of the CSV file for errors."
     }
 } else {
     Write-Host "None"
