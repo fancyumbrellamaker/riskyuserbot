@@ -471,9 +471,25 @@ if ($anchor) {
     $AnchorDevice | Format-List
     
     # Timezone Conversions (Force UTC source)
-    $utcTime = if ($anchor.EventTime) { $anchor.EventTime } else { Get-Date }
+    $utcTime = if ($anchor.EventTime) { $anchor.EventTime } else { [datetime]::UtcNow }
+    
+    # Ensure $utcTime is specifically Utc kind to satisfy .NET conversion rules
+    if ($utcTime.Kind -ne 'Utc') { $utcTime = [datetime]::SpecifyKind($utcTime, [System.DateTimeKind]::Utc) }
+
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
+
+    $ipVal = $anchor.IPAddress
+    $prefixInfo = ""
+    $prefix64 = "N/A"
+    if ($ipVal -match ':') {
+        # Extract the /64 prefix (first 4 segments)
+        $segments = $ipVal.Split(':')
+        if ($segments.Count -ge 4) {
+            $prefix64 = ($segments[0..3] -join ':') + "::/64"
+            $prefixInfo = "<div style='font-size:11px; color:var(--orange); margin-top:4px;'>Network Prefix: <span class='value'>$prefix64</span></div>"
+        }
+    }
     
     # Dataset Time Windows
     Write-Host "`nDataset Time Windows:"
@@ -843,9 +859,11 @@ if ($anchor) {
             <div class="card">
                 <span class="copy-icon" onclick="copy('$($anchor.IPAddress)')">COPY</span>
                 <span class="label">IP Address</span><span class="value">$($anchor.IPAddress)</span>
+                $prefixInfo
                 <div class="links">
                     <a href="https://www.virustotal.com/gui/ip-address/$($anchor.IPAddress)" target="_blank">VirusTotal</a>
                     <a href="https://www.abuseipdb.com/check/$($anchor.IPAddress)" target="_blank">AbuseIPDB</a>
+                    <a href="https://bgp.he.net/ip/$($anchor.IPAddress)" style="color:var(--orange)" target="_blank">ASN/BGP Lookup</a>
                 </div>
             </div>
             <div class="card">
@@ -950,9 +968,15 @@ if ($anchor) {
             $(Build-TicketStory -Anchor $anchor -DecisionBucket $decision -IsNewIP $isNewIP -IsNewLocation $isNewLoc -IsNewApp $isNewApp)
         </div>
 
-        <div class="section-title">DESIGN FLAWS</div>
+        <div class="section-title">⚠️ DESIGN FLAWS</div>
         <div class="card">
             $(if ($uniqueFlaws) { $uniqueFlaws | ForEach-Object { "<div class='flaw-item'>- $_</div>" } } else { "None Detected" })
+        </div>
+
+        <div class="section-title">🧠 ANALYST NOTES: IPV6 TRIAGE</div>
+        <div class="story-box" style="border-left-color: var(--orange);">
+            <p><strong>Why /64 matters:</strong> IPv6 addresses are vast. Attackers often rotate the last 64 bits (Interface ID) to bypass single-IP blocks. The first 64 bits (Prefix) usually identify the specific network or residential household.</p>
+            <p><strong>SOC Action:</strong> If you see multiple failures from the same /64 prefix (even with different full IPs), you are likely dealing with a single automated script or actor. <strong>Consider blocking the entire /64 range</strong> instead of the individual address.</p>
         </div>
     </div>
 </body>
