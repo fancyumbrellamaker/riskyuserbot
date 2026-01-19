@@ -852,9 +852,21 @@ if ($anchor) {
 
         <div class="section-title">TIME CONVERSIONS</div>
         <div class="grid">
-            <div class="card"><span class="label">UTC</span><span class="value">$(if($utcTime){$utcTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span></div>
-            <div class="card"><span class="label">EST (Eastern)</span><span class="value">$(if($estTime){$estTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span></div>
-            <div class="card"><span class="label">CST (Central)</span><span class="value">$(if($cstTime){$cstTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span></div>
+            <div class="card">
+                <span class="label">UTC</span>
+                <span class="value">$(if($utcTime){$utcTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span>
+                <div style="font-size:10px; color:var(--text-secondary); margin-top:4px;">Primary event timestamp</div>
+            </div>
+            <div class="card">
+                <span class="label">EST (Eastern)</span>
+                <span class="value">$(if($estTime){$estTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span>
+                <div style="font-size:10px; color:var(--text-secondary); margin-top:4px;">NYC/Miami/DC Local Time</div>
+            </div>
+            <div class="card">
+                <span class="label">CST (Central)</span>
+                <span class="value">$(if($cstTime){$cstTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span>
+                <div style="font-size:10px; color:var(--text-secondary); margin-top:4px;">Chicago/Dallas Local Time</div>
+            </div>
         </div>
 
         <div class="section-title">IDENTITY & NETWORK</div>
@@ -981,21 +993,21 @@ if ($anchor) {
         <div class="section-title">SOC TOOLBOX (ONE-CLICK PIVOT)</div>
         <div class="grid">
             <div class="card">
-                <span class="label">CrowdStrike EDR</span>
+                <span class="label">CrowdStrike EDR (Timeline)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://falcon.us-2.crowdstrike.com/hosts/hosts?filter=external_ip%3A%27$($anchor.IPAddress)%27" target="_blank" style="background:var(--red); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Search US-2 Hosts</a>
+                    <a href="https://falcon.us-2.crowdstrike.com/investigate/events/en-US/app/eactums/default?computer_name=$($AnchorDevice.DeviceId)" target="_blank" style="background:var(--red); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">View Host Storyline</a>
                 </div>
             </div>
             <div class="card">
-                <span class="label">Lansweeper Assets</span>
+                <span class="label">Lansweeper (Asset Search)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="http://mxpcorls01:82/Search.aspx?q=$($anchor.IPAddress)" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Search Inventory</a>
+                    <a href="http://mxpcorls01:82/Search.aspx?q=$($AnchorDevice.DeviceId)" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Open Asset Profile</a>
                 </div>
             </div>
             <div class="card span-2">
-                <span class="label">Rapid7 InsightIDR (Azure Ingress)</span>
+                <span class="label">Rapid7 Audit Path (Azure Sign-ins)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)&range=Last%2014%20Days" target="_blank" style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">View Azure Ingress Logs (14D)</a>
+                    <a href="https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)&range=Last%2014%20Days" target="_blank" style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">View Raw Azure Ingress Logs (14D)</a>
                 </div>
             </div>
         </div>
