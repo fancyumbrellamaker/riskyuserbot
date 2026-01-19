@@ -78,6 +78,35 @@ $ColumnAliases = @{
     "Country"         = @("Country", "Country/Region")
 }
 
+function Get-ScopeButtons {
+    param($BaseUrl, $ToolType, $TimeObj)
+    $scopes = @(
+        @{ Label = "1m";  Offset = 30 }
+        @{ Label = "5m";  Offset = 150 }
+        @{ Label = "1h";  Offset = 1800 }
+        @{ Label = "24h"; Offset = 43200 }
+        @{ Label = "7d";  Offset = 302400 }
+        @{ Label = "30d"; Offset = 1296000 }
+    )
+    $html = "<div class='scope-group'>"
+    foreach ($s in $scopes) {
+        $start = $TimeObj.AddSeconds(-$s.Offset)
+        $end   = $TimeObj.AddSeconds($s.Offset)
+        
+        if ($ToolType -eq "CS") {
+            $f = ([datetimeoffset]$start).ToUnixTimeSeconds()
+            $t = ([datetimeoffset]$end).ToUnixTimeSeconds()
+            $url = $BaseUrl + "&earliest=$f&latest=$t"
+        } else {
+            $f = [long]([datetimeoffset]$start).ToUnixTimeMilliseconds()
+            $t = [long]([datetimeoffset]$end).ToUnixTimeMilliseconds()
+            $url = $BaseUrl + "&from=$f&to=$t"
+        }
+        $html += "<a href='$url' target='_blank' class='scope-btn'>$($s.Label)</a>"
+    }
+    return $html + "</div>"
+}
+
 function Get-FieldValue {
     param(
         [Parameter(Mandatory=$false)] $Row,
@@ -831,6 +860,9 @@ if ($anchor) {
         .links a:hover { text-decoration: underline; }
         .story-box { background: #0d1117; border-left: 4px solid var(--blue); padding: 16px; font-style: italic; color: var(--text-secondary); line-height: 1.5; }
         .flaw-item { color: var(--orange); font-family: monospace; font-size: 13px; margin-bottom: 4px; }
+        .scope-group { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+        .scope-btn { background: #21262d; color: #8b949e; border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; font-size: 10px; text-decoration: none; font-weight: 600; transition: 0.2s; }
+        .scope-btn:hover { background: var(--blue); color: white; border-color: var(--blue); }
         .comparison-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
         .comparison-table th { background: #21262d; color: var(--blue); text-align: left; padding: 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
         .comparison-table td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -1011,13 +1043,17 @@ if ($anchor) {
             <div class="card">
                 <span class="label">CrowdStrike EDR (Timeline)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://falcon.us-2.crowdstrike.com/investigate/events/en-US/app/eactums/default?computer_name=$($AnchorDevice.DeviceId)&earliest=$fromSec&latest=$toSec" target="_blank" style="background:var(--red); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Host Storyline (+/- 12h)</a>
+                    <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Host Storyline</div>
+                    $(
+                        $csBase = "https://falcon.us-2.crowdstrike.com/investigate/events/en-US/app/eactums/default?computer_name=$($AnchorDevice.DeviceId)"
+                        Get-ScopeButtons -BaseUrl $csBase -ToolType "CS" -TimeObj $utcTime
+                    )
                 </div>
             </div>
             <div class="card">
-                <span class="label">Proofpoint (Mail History)</span>
+                <span class="label">Proofpoint (Smart Search)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://threatinsight.proofpoint.com/v2/dashboards/search?recipient=$ppUser&since=$ppSince&until=$ppUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">User Email (3D Lookback)</a>
+                    <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$ppUser&since=$ppSince&until=$ppUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">User Email (3D Lookback)</a>
                 </div>
             </div>
             <div class="card">
@@ -1029,13 +1065,17 @@ if ($anchor) {
             <div class="card">
                 <span class="label">Lansweeper (Asset Search)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="http://mxpcorls01:82/Search.aspx?q=$($AnchorDevice.DeviceId)" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Open Asset Profile</a>
+                    <a href="http://mxpcorls01:82/Search.aspx?SearchValue=$($AnchorDevice.DeviceId)" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Open Asset Profile</a>
                 </div>
             </div>
-            <div class="card">
-                <span class="label">Rapid7 Audit Path</span>
+            <div class="card span-2">
+                <span class="label">Rapid7 Audit Path (Azure Ingress)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)&from=$fromMs&to=$toMs" target="_blank" style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Azure Ingress (+/- 12h)</a>
+                    <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Search logs for IP: $($anchor.IPAddress)</div>
+                    $(
+                        $r7Base = "https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)"
+                        Get-ScopeButtons -BaseUrl $r7Base -ToolType "R7" -TimeObj $utcTime
+                    )
                 </div>
             </div>
         </div>
