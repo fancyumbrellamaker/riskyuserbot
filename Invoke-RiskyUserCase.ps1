@@ -172,6 +172,21 @@ if ($foundFiles.Count -eq 0) {
                 Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date (UTC)", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
             }
 
+            # DF04 Date Parse Tracking
+            $dateCol = if ($file.Name -match "NonInteractive") { "Date (UTC)" } else { "Date" }
+            $failCount = 0; $samples = @()
+            foreach ($r in $raw) {
+                $v = Get-Value -Row $r -ColumnName $dateCol
+                if ($null -eq (Parse-EventTime $v) -and -not [string]::IsNullOrWhiteSpace($v)) {
+                    $failCount++
+                    if ($samples.Count -lt 3) { $samples += $v }
+                }
+            }
+            if ($raw.Count -gt 0 -and ($failCount / $raw.Count) -gt 0.3) {
+                $designFlaws += "DF04 DateParseFailure ($($file.Name))"
+                Write-Host "ERROR: Dataset '$($file.Name)' date parse failure rate: $([math]::Round(($failCount/$raw.Count)*100))%. Samples: $($samples -join ', ')"
+            }
+
             if ($null -eq $raw -or $raw.Count -eq 0) {
                 $designFlaws += "DF02 EmptyDataset ($($file.Name))"
             }
