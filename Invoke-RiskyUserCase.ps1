@@ -472,16 +472,23 @@ if ($anchor) {
     $AnchorDevice | Format-List
     
     # Timezone Conversions (Force UTC source)
-    $utcTime = [datetime]::UtcNow # Absolute fallback
-    if ($anchor.EventTime -is [datetime]) {
-        $utcTime = [datetime]::SpecifyKind($anchor.EventTime, [System.DateTimeKind]::Utc)
-    } elseif ($anchor.EventTime -is [string] -and -not [string]::IsNullOrWhiteSpace($anchor.EventTime)) {
-        $parsed = Parse-EventTime $anchor.EventTime
-        if ($parsed) { $utcTime = $parsed }
-    }
+    $utcTime = if ($anchor.EventTime -is [datetime]) { $anchor.EventTime.ToUniversalTime() } else { [datetime]::UtcNow }
     
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
+
+    # Generate Epochs for Tool URLs (+/- 2 hours)
+    $startTime = $utcTime.AddHours(-2)
+    $endTime   = $utcTime.AddHours(2)
+    $fromMs    = [long]([datetimeoffset]::new($startTime).ToUnixTimeMilliseconds())
+    $toMs      = [long]([datetimeoffset]::new($endTime).ToUnixTimeMilliseconds())
+    $fromSec   = [datetimeoffset]::new($startTime).ToUnixTimeSeconds()
+    $toSec     = [datetimeoffset]::new($endTime).ToUnixTimeSeconds()
+
+    # Proofpoint 3-Day Lookback (Ending at Anchor)
+    $ppSince = $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $ppUntil = $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $ppUser  = [uri]::EscapeDataString($anchor.Username)
 
     $ipVal = $anchor.IPAddress
     $prefixInfo = ""
@@ -995,7 +1002,19 @@ if ($anchor) {
             <div class="card">
                 <span class="label">CrowdStrike EDR (Timeline)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://falcon.us-2.crowdstrike.com/investigate/events/en-US/app/eactums/default?computer_name=$($AnchorDevice.DeviceId)" target="_blank" style="background:var(--red); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">View Host Storyline</a>
+                    <a href="https://falcon.us-2.crowdstrike.com/investigate/events/en-US/app/eactums/default?computer_name=$($AnchorDevice.DeviceId)&earliest=$fromSec&latest=$toSec" target="_blank" style="background:var(--red); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Host Storyline (+/- 2h)</a>
+                </div>
+            </div>
+            <div class="card">
+                <span class="label">Proofpoint (Mail History)</span>
+                <div class="links" style="margin-top:10px;">
+                    <a href="https://threatinsight.proofpoint.com/v2/dashboards/search?recipient=$ppUser&since=$ppSince&until=$ppUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">User Email (3D Lookback)</a>
+                </div>
+            </div>
+            <div class="card">
+                <span class="label">Proofpoint (TRAP Incidents)</span>
+                <div class="links" style="margin-top:10px;">
+                    <a href="https://us.threatresponse.proofpoint.com/incidents?search=$ppUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Search TRAP Incidents</a>
                 </div>
             </div>
             <div class="card">
@@ -1004,10 +1023,10 @@ if ($anchor) {
                     <a href="http://mxpcorls01:82/Search.aspx?q=$($AnchorDevice.DeviceId)" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Open Asset Profile</a>
                 </div>
             </div>
-            <div class="card span-2">
-                <span class="label">Rapid7 Audit Path (Azure Sign-ins)</span>
+            <div class="card">
+                <span class="label">Rapid7 Audit Path</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)&range=Last%2014%20Days" target="_blank" style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">View Raw Azure Ingress Logs (14D)</a>
+                    <a href="https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)&from=$fromMs&to=$toMs" target="_blank" style="background:var(--blue); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Azure Ingress (+/- 2h)</a>
                 </div>
             </div>
         </div>
