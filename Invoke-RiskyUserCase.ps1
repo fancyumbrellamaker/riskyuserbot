@@ -135,17 +135,48 @@ function Test-IsNewValue {
 }
 
 function Get-DecisionBucket {
-    param([Parameter(Mandatory=$true)] $Anchor)
+    param([Parameter(Mandatory=$true)] $Anchor, $Score)
     if ($null -eq $Anchor) { return "unknown" }
+    
     $status = if ($Anchor.Status) { $Anchor.Status.ToString().ToLower() } else { "" }
-    if ($status -notmatch "success") { return "close_attempt_blocked" }
+    
+    # Triage based on Behavioral Risk Score
+    if ($status -notmatch "success") {
+        if ($Score -ge 70) { return "compromise_remediate_password" }
+        return "close_attempt_blocked"
+    }
     
     $mfa = if ($Anchor.MfaResult) { $Anchor.MfaResult.ToString().ToLower() } else { "" }
     if ($status -match "success") {
+        if ($Score -ge 70) { return "investigate_active_compromise" }
         if ($mfa -eq "false" -or $mfa -eq "no") { return "contain_hard" }
         if ($mfa -eq "true" -or $mfa -eq "yes") { return "close_benign" }
     }
     return "investigate"
+}
+
+function Get-RiskScore {
+    param($Anchor, $IsNewIP, $IsNewDevice, $AnchorDevice)
+    $score = 0
+    
+    # --- RISK INDICATORS (Add points) ---
+    if ($IsNewIP) { $score += 30 }
+    if ($IsNewDevice) { $score += 30 }
+    
+    # Non-browser tools (like Axios/Python) are high risk
+    $ua = if ($AnchorDevice.UserAgent) { $AnchorDevice.UserAgent.ToString() } else { "" }
+    if ($ua -ne "Unknown" -and $ua -notmatch "Mozilla/") { $score += 50 }
+    
+    # Password likely correct if they hit MFA (Interrupted)
+    if ($Anchor.Status -eq "Interrupted") { $score += 20 }
+
+    # --- SAFETY OFFSETS (Subtract points for trusted signals) ---
+    if ($AnchorDevice.Compliant -eq "True") { $score -= 50 }
+    if ($AnchorDevice.Managed -eq "True") { $score -= 30 }
+    if ($AnchorDevice.JoinType -match "Joined|Managed") { $score -= 20 }
+
+    # Floor at 0
+    return [math]::Max(0, $score)
 }
 
 function Get-Frequency {
@@ -625,10 +656,13 @@ if ($count7d -lt 25 -or $count30d -lt 100) {
 
 # --- NOVELTY ---
 Write-Host "`n=== NOVELTY ==="
-$isNewIP = $false; $isNewLoc = $false; $isNewApp = $false
+$isNewIP = $false; $isNewLoc = $false; $isNewApp = $false; $isNewDevice = $false
 if ($anchor) {
     $isNewIP = Test-IsNewValue -BaselineEvents $data30d -PropertyName "IPAddress" -Value $anchor.IPAddress
+    $isNewDevice = Test-IsNewValue -BaselineEvents $data30d -PropertyName "DeviceId" -Value $AnchorDevice.DeviceId
+    
     Write-Host "New IP: $isNewIP"
+    Write-Host "New Device: $isNewDevice"
 }
 
 # --- DESIGN_FLAWS ---
@@ -693,10 +727,12 @@ if ($designFlaws.Count -gt 0) {
 # --- DECISION ---
 Write-Host "`n=== DECISION ==="
 $decision = "N/A (No Anchor)"
+$riskScore = 0
 if ($anchor) {
-    $decision = Get-DecisionBucket -Anchor $anchor
+    $riskScore = Get-RiskScore -Anchor $anchor -IsNewIP $isNewIP -IsNewDevice $isNewDevice -AnchorDevice $AnchorDevice
+    $decision = Get-DecisionBucket -Anchor $anchor -Score $riskScore
 }
-Write-Host $decision
+Write-Host "$decision (Risk Score: $riskScore)"
 
 # --- STORY ---
 Write-Host "`n=== STORY ==="
@@ -784,7 +820,7 @@ if ($anchor) {
         </div>
 
         <div class="decision-banner">
-            <div class="label">Primary Decision</div>
+            <div class="label">Primary Decision (Risk Score: $riskScore)</div>
             <div class="decision-value">$($decision.ToUpper())</div>
         </div>
 
