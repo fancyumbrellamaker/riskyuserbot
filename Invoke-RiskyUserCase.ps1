@@ -124,11 +124,14 @@ function Build-TicketStory {
 # -------------------------
 
 if (-not (Test-Path $CaseFolder)) {
-    Fail "CaseFolder not found: $CaseFolder"
+    $designFlaws += "DF01 MissingFiles"
 }
 
-$designFlaws = @()
-$foundFiles = Get-ChildItem -Path $CaseFolder -Filter "*.csv"
+$foundFiles = Get-ChildItem -Path $CaseFolder -Filter "*.csv" -ErrorAction SilentlyContinue
+if ($null -eq $foundFiles -or $foundFiles.Count -eq 0) {
+    if ("DF01 MissingFiles" -notin $designFlaws) { $designFlaws += "DF01 MissingFiles" }
+}
+
 $data = @{}
 $presence = @{
     "Interactive"    = $false
@@ -237,6 +240,9 @@ if ($anchor) {
 Write-Host "`n=== DESIGN_FLAWS ==="
 if ($designFlaws.Count -gt 0) {
     $designFlaws | Select-Object -Unique | ForEach-Object { Write-Host $_ }
+    if ($designFlaws -contains "DF01 MissingFiles") {
+        Write-Host "HINT: Export sign-in logs CSVs and place them in the CaseFolder."
+    }
 } else {
     Write-Host "None"
 }
