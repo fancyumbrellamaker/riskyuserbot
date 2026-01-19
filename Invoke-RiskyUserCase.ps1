@@ -301,7 +301,21 @@ if ($foundFiles.Count -eq 0) {
     }
 }
 
-Write-Host "`nDataset Types Present:"
+    # DF19 NonInteractiveOnlyCase
+    $hasInt = $presence["Interactive"]
+    $hasNi = $presence["NonInteractive"]
+    if (-not $hasInt -and $hasNi) {
+        $designFlaws += "DF19 NonInteractiveOnlyCase"
+        Write-Host "Case appears to be Non-Interactive only."
+    }
+
+    # DF20 InteractiveOnlyCase
+    if ($hasInt -and -not $hasNi) {
+        $designFlaws += "DF20 InteractiveOnlyCase"
+        Write-Host "Case appears to be Interactive only."
+    }
+
+    Write-Host "`nDataset Types Present:"
 foreach ($type in $presence.Keys | Sort-Object) {
     $status = if ($presence[$type]) { "[PRESENT]" } else { "[MISSING]" }
     Write-Host "  $type`: $status"
@@ -468,43 +482,49 @@ if ($designFlaws.Count -gt 0) {
         }
     }
     if ($uniqueFlaws -match "DF01") {
-        Write-Host "HINT: Export sign-in logs CSVs and place them in the CaseFolder."
+        Write-Host "DF01 MissingFiles: HINT: Export sign-in logs CSVs and place them in the CaseFolder."
     }
     if ($uniqueFlaws -match "DF06") {
-        Write-Host "HINT: Join rate is low. Re-export both CSVs ensuring the same Time Range and Filters (e.g. User or Request ID) are applied to both Sign-ins and AuthDetails."
+        Write-Host "DF06 JoinRateLow: HINT: Join rate is low. Re-export both CSVs ensuring the same Time Range and Filters (e.g. User or Request ID) are applied to both Sign-ins and AuthDetails."
     }
     if ($uniqueFlaws -match "DF08") {
-        Write-Host "HINT: Baseline files appear to contain data from a different time period than the anchor."
+        Write-Host "DF08 TimeWindowMismatch: HINT: Baseline files appear to contain data from a different time period than the anchor."
     }
     if ($uniqueFlaws -match "DF09") {
-        Write-Host "HINT: Anchor event is missing location data. Check if IP address is from a known VPN or datacenter."
+        Write-Host "DF09 LocationMissing: HINT: Anchor event is missing location data. Check if IP address is from a known VPN or datacenter."
     }
     if ($uniqueFlaws -match "DF10") {
-        Write-Host "HINT: Anchor event is missing an IP address. This can happen with certain managed service identity or app-only sign-ins."
+        Write-Host "DF10 IPMissing: HINT: Anchor event is missing an IP address. This can happen with certain managed service identity or app-only sign-ins."
     }
     if ($uniqueFlaws -match "DF11") {
-        Write-Host "HINT: Anchor event is missing Application name. Verify if the sign-in was to a legacy or custom internal resource."
+        Write-Host "DF11 AppMissing: HINT: Anchor event is missing Application name. Verify if the sign-in was to a legacy or custom internal resource."
     }
     if ($uniqueFlaws -match "DF12") {
-        Write-Host "HINT: Baseline event counts are low. Novelty detection may be less reliable until more historical data is provided."
+        Write-Host "DF12 TooFewEventsForBaseline: HINT: Baseline event counts are low. Novelty detection may be less reliable until more historical data is provided."
     }
     if ($uniqueFlaws -match "DF13") {
-        Write-Host "HINT: Dataset is very large. Consider exporting a smaller time window or filtering to a specific user to improve performance."
+        Write-Host "DF13 TooManyEventsTruncated: HINT: Dataset is very large. Consider exporting a smaller time window or filtering to a specific user to improve performance."
     }
     if ($uniqueFlaws -match "DF14") {
-        Write-Host "HINT: Duplicate or blank headers detected. Check the first row of the CSV file for errors."
+        Write-Host "DF14 DuplicateHeaders: HINT: Duplicate or blank headers detected. Check the first row of the CSV file for errors."
     }
     if ($uniqueFlaws -match "DF15") {
-        Write-Host "HINT: Multiple tenant IDs detected. This investigation may contain data from different environments or guest accounts."
+        Write-Host "DF15 MixedTenantNoise: HINT: Multiple tenant IDs detected. This investigation may contain data from different environments or guest accounts."
     }
     if ($uniqueFlaws -match "DF16") {
-        Write-Host "HINT: Conditional Access status is not available. Review the Azure AD sign-in logs for policy details."
+        Write-Host "DF16 ConditionalAccessUnknown: HINT: Conditional Access status is not available. Review the Azure AD sign-in logs for policy details."
     }
     if ($uniqueFlaws -match "DF17") {
-        Write-Host "HINT: MFA result is unknown. This typically means the AuthDetails CSV was missing or didn't contain matching Request IDs for the anchor event."
+        Write-Host "DF17 MFAUnknown: HINT: MFA result is unknown. This typically means the AuthDetails CSV was missing or didn't contain matching Request IDs for the anchor event."
     }
     if ($uniqueFlaws -match "DF18") {
-        Write-Host "HINT: Export type mismatch detected. Entra CSV headers don't match the filename. Verify you didn't rename the files incorrectly."
+        Write-Host "DF18 ExportTypeMismatch: HINT: Export type mismatch detected. Entra CSV headers don't match the filename. Verify you didn't rename the files incorrectly."
+    }
+    if ($uniqueFlaws -match "DF19") {
+        Write-Host "DF19 NonInteractiveOnlyCase: HINT: Investigation is limited to non-interactive sign-ins. Manual correlation with user activity in other logs may be required."
+    }
+    if ($uniqueFlaws -match "DF20") {
+        Write-Host "DF20 InteractiveOnlyCase: HINT: Investigation is limited to interactive sign-ins. Review if the user has non-interactive activity that might be missed."
     }
 } else {
     Write-Host "None"
@@ -512,7 +532,10 @@ if ($designFlaws.Count -gt 0) {
 
 # --- DECISION ---
 Write-Host "`n=== DECISION ==="
-$decision = Get-DecisionBucket -Anchor $anchor
+$decision = "N/A (No Anchor)"
+if ($anchor) {
+    $decision = Get-DecisionBucket -Anchor $anchor
+}
 Write-Host $decision
 
 # --- STORY ---
