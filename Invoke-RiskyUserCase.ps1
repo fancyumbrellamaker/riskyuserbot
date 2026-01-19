@@ -159,6 +159,8 @@ function Test-Columns {
 # Main
 # -------------------------
 
+$designFlaws = @() # Correctly initialize as an array
+
 if (-not (Test-Path $CaseFolder)) {
     $designFlaws += "DF01 MissingFiles"
 }
@@ -363,6 +365,11 @@ if ($anchor) {
         $designFlaws += "DF11 AppMissing"
     }
 
+    # DF16 ConditionalAccessUnknown
+    if ([string]::IsNullOrWhiteSpace($anchor.ConditionalAccess) -or $anchor.ConditionalAccess -in @("Unknown", "Not Available", "None")) {
+        $designFlaws += "DF16 ConditionalAccessUnknown"
+    }
+
     # DF08 TimeWindowMismatch
     $minMax = @{}
     foreach ($key in $data.Keys) {
@@ -437,7 +444,7 @@ if ($designFlaws.Count -gt 0) {
     $uniqueFlaws = @($designFlaws) | Select-Object -Unique
     foreach ($flaw in $uniqueFlaws) {
         if (-not [string]::IsNullOrWhiteSpace($flaw)) {
-            [Console]::WriteLine(" - " + $flaw)
+            Write-Host " - $flaw"
         }
     }
     if ($uniqueFlaws -match "DF01") {
@@ -469,6 +476,9 @@ if ($designFlaws.Count -gt 0) {
     }
     if ($uniqueFlaws -match "DF15") {
         Write-Host "HINT: Multiple tenant IDs detected. This investigation may contain data from different environments or guest accounts."
+    }
+    if ($uniqueFlaws -match "DF16") {
+        Write-Host "HINT: Conditional Access status is not available. Review the Azure AD sign-in logs for policy details."
     }
 } else {
     Write-Host "None"
