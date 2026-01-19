@@ -81,20 +81,31 @@ $ColumnAliases = @{
 function Get-ScopeButtons {
     param($BaseUrl, $ToolType, $TimeObj)
     $scopes = @(
-        @{ Label = "1m";  Offset = 30 }
         @{ Label = "5m";  Offset = 150 }
         @{ Label = "1h";  Offset = 1800 }
         @{ Label = "24h"; Offset = 43200 }
         @{ Label = "7d";  Offset = 302400 }
         @{ Label = "30d"; Offset = 1296000 }
     )
-    $html = "<div class='scope-group'>"
+    
+    # 1. Calculate the Primary 1-Minute Pivot (The "Immediately Viewable" Minute)
+    $start1m = ([datetimeoffset]::new($TimeObj.AddSeconds(-30))).ToUnixTimeMilliseconds()
+    $end1m   = ([datetimeoffset]::new($TimeObj.AddSeconds(30))).ToUnixTimeMilliseconds()
+    if ($ToolType -eq "CS") {
+        # CrowdStrike uses millisecond epochs for Advanced Search
+        $primaryUrl = $BaseUrl + "&start=$start1m&end=$end1m"
+    } else {
+        $primaryUrl = $BaseUrl + "&from=$start1m&to=$end1m"
+    }
+
+    $html = "<a href='$primaryUrl' target='_blank' class='primary-pivot-btn'>PIVOT TO EXACT MINUTE</a>"
+    $html += "<div style='font-size:10px; color:var(--text-secondary); margin: 8px 0 4px 0;'>EXPAND TIMELINE:</div>"
+    $html += "<div class='scope-group'>"
     foreach ($s in $scopes) {
         $start = $TimeObj.AddSeconds(-$s.Offset)
         $end   = $TimeObj.AddSeconds($s.Offset)
         
         if ($ToolType -eq "CS") {
-            # CrowdStrike Advanced Event Search uses 13-digit millisecond epochs
             $f = [long]([datetimeoffset]::new($start).ToUnixTimeMilliseconds())
             $t = [long]([datetimeoffset]::new($end).ToUnixTimeMilliseconds())
             $url = $BaseUrl + "&start=$f&end=$t"
@@ -886,6 +897,8 @@ if ($anchor) {
         .scope-group { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
         .scope-btn { background: #21262d; color: #8b949e; border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; font-size: 10px; text-decoration: none; font-weight: 600; transition: 0.2s; }
         .scope-btn:hover { background: var(--blue); color: white; border-color: var(--blue); }
+        .primary-pivot-btn { background: var(--blue); color: white; border: none; padding: 8px 15px; border-radius: 4px; font-weight: bold; display: block; text-align: center; text-decoration: none; font-size: 12px; transition: 0.2s; }
+        .primary-pivot-btn:hover { filter: brightness(1.2); box-shadow: 0 0 10px rgba(88, 166, 255, 0.4); }
         .comparison-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
         .comparison-table th { background: #21262d; color: var(--blue); text-align: left; padding: 12px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
         .comparison-table td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
@@ -1079,6 +1092,9 @@ if ($anchor) {
                         $csBase = "https://falcon.us-2.crowdstrike.com/investigate/search?repo=all&query=$cqlQuery"
                         Get-ScopeButtons -BaseUrl $csBase -ToolType "CS" -TimeObj $utcTime
                     )
+                    <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:8px;">
+                        <a href="https://falcon.us-2.crowdstrike.com/host-management/hosts?filter=hostname%233A%27$($AnchorDevice.DeviceId)%27" target="_blank" style="color:var(--blue); font-size:11px; text-decoration:none;">View Host Details Page</a>
+                    </div>
                 </div>
             </div>
             <div class="card">
