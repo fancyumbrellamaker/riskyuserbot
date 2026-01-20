@@ -92,14 +92,6 @@ function Get-LastSeen {
     return "Never"
 }
 
-function Test-IsNewValue {
-    param($BaselineEvents, $Aliases, $Value)
-    if ($null -eq $Value -or $Value -eq "Unknown") { return $false }
-    if ($null -eq $BaselineEvents -or $BaselineEvents.Count -eq 0) { return $true }
-    $existing = $BaselineEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $Aliases } | Select-Object -Unique
-    return -not ($existing -contains $Value)
-}
-
 function Get-RiskScore {
     param($Anchor, $IsNewIP, $IsNewDevice, $AnchorDevice)
     $score = 0
@@ -135,6 +127,8 @@ function Build-TicketStory {
     $parts = @()
     $parts += "Anchor sign-in: user=$($Anchor.Username), time=$($Anchor.EventTime), app=$($Anchor.Application), status=$($Anchor.Status)."
     $parts += "IP=$($Anchor.IPAddress), location=$($Anchor.Location), requestId=$($Anchor.RequestId)."
+    $parts += "MFA: result=$($Anchor.MfaResult), ca=$($Anchor.ConditionalAccess)."
+    $parts += "Novelty: newIP=$IsNewIP, newLocation=$IsNewLocation, newApp=$IsNewApp."
     $parts += "Decision: $DecisionBucket."
     return ($parts -join " ")
 }
@@ -163,7 +157,7 @@ function Get-ScopeButtons {
 }
 
 function Write-Report {
-    param($Status, $Anchor, $AnchorDevice, $UtcTime, $EstTime, $CstTime, $Decision, $RiskScore, $UniqueFlaws, $IsNewIP, $IsNewLocation, $IsNewApp, $MatrixRows, $Set24h, $Set7d, $Set30d, $CaseFolder, $Rapid7OrgId, $Rapid7LogList, $EncodedIP, $PpUser, $PpSince, $PpUntil, $lsUserUrl, $CsBaseUrl, $ReportFileName)
+    param($Status, $Anchor, $AnchorDevice, $UtcTime, $EstTime, $CstTime, $Decision, $RiskScore, $UniqueFlaws, $IsNewIP, $IsNewLocation, $IsNewApp, $MatrixRows, $Set24h, $Set7d, $Set30d, $CaseFolder, $Rapid7OrgId, $Rapid7LogList, $EncodedIP, $PpUser, $PpSince, $PpUntil, $lsUserUrl, $CsBaseUrl, $ReportFileName, $PrefixInfo)
     
     $statusBadgeClass = if($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
     $reportPath = Join-Path $CaseFolder $ReportFileName
@@ -190,12 +184,16 @@ function Write-Report {
         .decision-banner { background: var(--card-bg); border: 2px solid var(--blue); border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 20px; }
         .decision-value { font-size: 32px; font-weight: 800; color: var(--blue); text-transform: uppercase; }
         .scope-group { display: flex; gap: 4px; margin-top: 8px; }
-        .scope-btn { background: #21262d; color: #8b949e; border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; font-size: 10px; text-decoration: none; }
-        .primary-pivot-btn { background: var(--blue); color: white; padding: 8px 15px; border-radius: 4px; font-weight: bold; display: block; text-align: center; text-decoration: none; font-size: 12px; }
-        .comparison-table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+        .scope-btn { background: #21262d; color: #8b949e; border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; font-size: 10px; text-decoration: none; font-weight: 600; transition: 0.2s; }
+        .scope-btn:hover { background: var(--blue); color: white; border-color: var(--blue); }
+        .primary-pivot-btn { background: var(--blue); color: white; border: none; padding: 8px 15px; border-radius: 4px; font-weight: bold; display: block; text-align: center; text-decoration: none; font-size: 12px; transition: 0.2s; }
+        .primary-pivot-btn:hover { filter: brightness(1.2); box-shadow: 0 0 10px rgba(88, 166, 255, 0.4); }
+        .comparison-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
         .comparison-table th { background: #21262d; color: var(--blue); text-align: left; padding: 12px; font-size: 11px; }
         .comparison-table td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
-        .anchor-row-highlight { background: rgba(88, 166, 255, 0.1) !important; }
+        .anchor-row-highlight { background: rgba(88, 166, 255, 0.1) !important; border-left: 4px solid var(--blue); }
+        .flaw-item { color: var(--orange); font-family: monospace; font-size: 13px; margin-bottom: 4px; }
+        .story-box { background: #0d1117; border-left: 4px solid var(--blue); padding: 16px; font-style: italic; color: var(--text-secondary); line-height: 1.5; }
     </style>
     <script>
         function copy(text) { navigator.clipboard.writeText(text); alert('Copied: ' + text); }
@@ -229,10 +227,18 @@ function Write-Report {
         <div class="section-title">IDENTITY & NETWORK</div>
         <div class="grid">
             <div class="card"><span class="label">User</span><span class="value">$($anchor.Username)</span></div>
-            <div class="card"><span class="label">IP Address</span><span class="value">$($anchor.IPAddress)</span></div>
-            <div class="card"><span class="label">Geo Detail</span><span class="value">$($anchor.City), $($anchor.State)</span></div>
+            <div class="card">
+                <span class="label">IP Address</span><span class="value">$($anchor.IPAddress)</span>
+                $PrefixInfo
+                <div style="margin-top:8px;">
+                    <a href="https://www.virustotal.com/gui/ip-address/$($anchor.IPAddress)" target="_blank" style="color:var(--blue); font-size:11px; text-decoration:none; margin-right:10px;">VirusTotal</a>
+                    <a href="https://bgp.he.net/ip/$($anchor.IPAddress)" target="_blank" style="color:var(--orange); font-size:11px; text-decoration:none;">ASN Lookup</a>
+                </div>
+            </div>
+            <div class="card"><span class="label">Geo Detail</span><span class="value">$($anchor.City), $($anchor.State), $($anchor.Country)</span></div>
             <div class="card"><span class="label">Application</span><span class="value">$($anchor.Application)</span></div>
         </div>
+        
         <div class="section-title">SOC TOOLBOX</div>
         <div class="card" style="border: 1px dashed var(--blue); margin-bottom: 15px;">
             <span class="label">Manual Host Override (from Lansweeper)</span>
@@ -246,43 +252,65 @@ function Write-Report {
                 <a href="$CsBaseUrl/host-management/hosts?filter=hostname%3A%27$($AnchorDevice.DeviceId.ToUpper())%27" id="cs-host-details" target="_blank" style="background:rgba(88, 166, 255, 0.1); color:var(--blue); border:1px solid var(--blue); padding:8px 15px; border-radius:4px; font-weight:bold; display:block; text-align:center; text-decoration:none; font-size:11px; margin-top:10px;">VIEW HOST DETAILS</a>
             </div>
             <div class="card">
+                <span class="label">Proofpoint Search</span>
+                <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
+                    <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$PpUser&since=$PpSince&until=$PpUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; padding:8px 15px; border-radius:4px; text-align:center; text-decoration:none; font-weight:bold;">Email (3D Lookback)</a>
+                    <a href="https://us.threatresponse.proofpoint.com/incidents?search=$PpUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:8px 15px; border-radius:4px; text-align:center; text-decoration:none; font-weight:bold;">TRAP Incidents</a>
+                </div>
+            </div>
+            <div class="card">
                 <span class="label">Lansweeper User</span>
-                <a href="$lsUserUrl" target="_blank" style="background:var(--green); color:white; padding:8px 15px; border-radius:4px; display:block; text-align:center; text-decoration:none;">View User Profile</a>
+                <a href="$lsUserUrl" target="_blank" style="background:var(--green); color:white; padding:8px 15px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold;">View User Profile</a>
             </div>
             <div class="card span-2">
                 <span class="label">Rapid7 Logs</span>
                 $(Get-ScopeButtons -BaseUrl "https://us.idr.insight.rapid7.com/op/$Rapid7OrgId#/search?logs=$Rapid7LogList&query=where($EncodedIP)" -ToolType "R7" -TimeObj $UtcTime)
             </div>
         </div>
+
+        <div class="section-title">STATISTICAL BASELINE</div>
         $(if($Status -eq "FINAL"){
             @"
-        <div class="section-title">STATISTICAL BASELINE</div>
         <table class="comparison-table">
             <thead><tr><th>Attribute</th><th>Value</th><th>Last Seen</th><th>24h</th><th>7d</th><th>30d</th></tr></thead>
             <tbody>
                 <tr><td>Device ID</td><td>$($AnchorDevice.DeviceId)</td><td>$(Get-LastSeen $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set30d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set24h)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set7d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set30d)</td></tr>
                 <tr><td>IP Address</td><td>$($anchor.IPAddress)</td><td>$(Get-LastSeen $anchor.IPAddress @('IP address') $Set30d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $Set24h)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $Set7d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $Set30d)</td></tr>
+                <tr><td>Location</td><td>$($anchor.Location)</td><td>$(Get-LastSeen $anchor.Location @('Location') $Set30d)</td><td>$(Get-Frequency $anchor.Location @('Location') $Set24h)</td><td>$(Get-Frequency $anchor.Location @('Location') $Set7d)</td><td>$(Get-Frequency $anchor.Location @('Location') $Set30d)</td></tr>
+                <tr><td>User Agent</td><td style="font-size:10px;">$($AnchorDevice.UserAgent)</td><td>$(Get-LastSeen $AnchorDevice.UserAgent $script:ColumnAliases['UserAgent'] $Set30d)</td><td>$(Get-Frequency $AnchorDevice.UserAgent $script:ColumnAliases['UserAgent'] $Set24h)</td><td>$(Get-Frequency $AnchorDevice.UserAgent $script:ColumnAliases['UserAgent'] $Set7d)</td><td>$(Get-Frequency $AnchorDevice.UserAgent $script:ColumnAliases['UserAgent'] $Set30d)</td></tr>
             </tbody>
         </table>
 "@
         }else{
             "<div class='card' style='text-align:center; padding:40px; color:var(--orange); font-weight:bold;'>ANALYSIS IN PROGRESS... REFRESH IN 10S</div>"
         })
+
         $(if($Status -eq "FINAL" -and $MatrixRows){
             @"
-        <div class="section-title">DEVICE CORRELATION MATRIX</div>
+        <div class="section-title">DEVICE CORRELATION MATRIX (30D)</div>
         <table class="comparison-table">
             <thead><tr><th>Device ID</th><th>IPs</th><th>OS/Browser</th><th>Posture</th><th>30d Freq</th></tr></thead>
             <tbody>$($MatrixRows -join "")</tbody>
         </table>
 "@
         })
+
+        <div class="section-title">INVESTIGATION STORY</div>
+        <div class="story-box">
+            $(Build-TicketStory -Anchor $anchor -DecisionBucket $Decision -IsNewIP $IsNewIP -IsNewLocation $IsNewLocation -IsNewApp $IsNewApp)
+        </div>
+
+        <div class="section-title">🧠 ANALYST NOTES: IPV6 TRIAGE</div>
+        <div class="story-box" style="border-left-color: var(--orange);">
+            <p><strong>Why /64 matters:</strong> IPv6 addresses are vast. Attackers often rotate the last 64 bits (Interface ID) to bypass single-IP blocks. The first 64 bits (Prefix) usually identify the specific network or residential household.</p>
+            <p><strong>SOC Action:</strong> If you see multiple failures from the same /64 prefix (even with different full IPs), you are likely dealing with a single automated script or actor. <strong>Consider blocking the entire /64 range</strong> instead of the individual address.</p>
+        </div>
     </div>
 </body>
 </html>
 "@
     $html | Out-File $reportPath -Encoding utf8
-    Write-Host "HTML Report generated: $reportPath"
+    Write-Host "HTML Report updated: $reportPath"
 }
 
 # --- START EXECUTION ---
@@ -338,7 +366,7 @@ if($anchor){
         UserAgent = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["UserAgent"]
     }
     
-    $utcTime = if($anchor.EventTime){$anchor.EventTime}else{[datetime]::UtcNow}
+    $utcTime = if($anchor.EventTime){ [datetime]::SpecifyKind($anchor.EventTime, [System.DateTimeKind]::Utc) } else { [datetime]::UtcNow }
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
     
@@ -346,14 +374,21 @@ if($anchor){
     $trunc = "Unknown"; if($anchor.Username -and $anchor.Username -match "@"){$trunc = $anchor.Username.Split('@')[0]}elseif($anchor.Username){$trunc=$anchor.Username}
     $lsUrl = "$LS_URL/user.aspx?username=$trunc&userdomain=$LS_DOMAIN"
     
-    # Persistent Filename logic
+    # Filename logic
     $ts = (Get-Date).ToString("yyyyddMM-hhmmssfff tt")
     $targetLabel = if($AnchorDevice.DeviceId -ne "Unknown") { $AnchorDevice.DeviceId.ToUpper() } else { $trunc }
     $reportFileName = "$ts EST RiskyUserAlert $($targetLabel) report.html"
 
+    # IPv6 Prefix Logic
+    $ipVal = $anchor.IPAddress; $prefixInfo = ""; if ($ipVal -match ':') {
+        $segments = $ipVal.Split(':'); if ($segments.Count -ge 4) {
+            $prefix64 = ($segments[0..3] -join ':') + "::/64"; $prefixInfo = "<div style='font-size:11px; color:var(--orange); margin-top:4px;'>Network Prefix: <span class='value'>$prefix64</span></div>"
+        }
+    }
+
     # Phase 1: Progressive Report
     Write-Host "Generating Initial Pivot Report..."
-    Write-Report -Status "INITIAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision "PENDING" -RiskScore 0 -UniqueFlaws @() -IsNewIP $false -IsNewLocation $false -IsNewApp $false -MatrixRows @() -Set24h @() -Set7d @() -Set30d @() -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ReportFileName $reportFileName
+    Write-Report -Status "INITIAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision "PENDING" -RiskScore 0 -UniqueFlaws @() -IsNewIP $false -IsNewLocation $false -IsNewApp $false -MatrixRows @() -Set24h @() -Set7d @() -Set30d @() -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ReportFileName $reportFileName -PrefixInfo $prefixInfo
 
     # Phase 2: Heavy Math
     Write-Host "Processing Baseline Metrics..."
@@ -369,15 +404,13 @@ if($anchor){
         $dId = $g.Name; $evs = $g.Group
         $ips = $evs.IPAddress | Select-Object -Unique
         $rowStyle = if($dId -eq $AnchorDevice.DeviceId){"class='anchor-row-highlight'"}else{""}
-        "<tr $rowStyle><td>$dId</td><td>$($ips -join ',')</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['OperatingSystem'])</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Compliant'])</td><td>$($evs.Count)</td></tr>"
+        "<tr $rowStyle><td>$dId</td><td>$($ips -join ',')</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['OperatingSystem']) / $(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Browser'])</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Compliant'])</td><td>$($evs.Count)</td></tr>"
     }
     
     $risk = Get-RiskScore -Anchor $anchor -IsNewIP $isNewIP -IsNewDevice $isNewDevice -AnchorDevice $AnchorDevice
     $finalDecision = Get-DecisionBucket -Anchor $anchor -Score $risk
     
-    # Phase 3: Final Update
-    Write-Host "Finalizing Report..."
-    Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $finalDecision -RiskScore $risk -UniqueFlaws @() -IsNewIP $isNewIP -IsNewLocation $false -IsNewApp $false -MatrixRows $matrix -Set24h $set24h -Set7d $set7d -Set30d $set30d -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ReportFileName $reportFileName
+    Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $finalDecision -RiskScore $risk -UniqueFlaws @() -IsNewIP $isNewIP -IsNewLocation $false -IsNewApp $false -MatrixRows $matrix -Set24h $set24h -Set7d $set7d -Set30d $set30d -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ReportFileName $reportFileName -PrefixInfo $prefixInfo
 } else { Write-Host "No anchor found for Request ID: $AnchorRequestId" }
 
 Write-Host "`nDONE"
