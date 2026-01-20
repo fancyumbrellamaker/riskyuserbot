@@ -356,6 +356,9 @@ if($AnchorRequestId){
 }
 
 if($anchor){
+    Write-Host "`nDEBUG: User Identification"
+    Write-Host "  - Raw Username from CSV: [$($anchor.Username)]"
+    
     $AnchorDevice = [pscustomobject]@{
         DeviceId = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["DeviceId"]
         OperatingSystem = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["OperatingSystem"]
@@ -376,6 +379,7 @@ if($anchor){
     $ppUntil = $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
     $encodedIP = [uri]::EscapeDataString($anchor.IPAddress)
     $trunc = "Unknown"; if($anchor.Username -and $anchor.Username -match "@"){$trunc = $anchor.Username.Split('@')[0]}elseif($anchor.Username){$trunc=$anchor.Username}
+    Write-Host "  - Truncated for LS:      [$trunc]"
     $lsUrl = "$LS_URL/user.aspx?username=$trunc&userdomain=$LS_DOMAIN"
     
     # Phase 1: Progressive Report
