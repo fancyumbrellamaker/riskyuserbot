@@ -1,11 +1,11 @@
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string] $CaseFolder,
 
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [string] $AlertTime,
 
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [string] $AnchorRequestId
 )
 
@@ -25,10 +25,10 @@ if (Test-Path $envFile) {
 
 # Define Fallbacks for Company Data
 $RAPID7_ORG_ID = if ($env:RAPID7_ORG_ID) { $env:RAPID7_ORG_ID } else { "682B861F32ACBF7D3060" }
-$RAPID7_LOGS   = if ($env:RAPID7_AZURE_INGRESS_LOGS) { $env:RAPID7_AZURE_INGRESS_LOGS } else { "%5B%222186bedc4-1ee4-4728-a970-43575fb22d9d%22%5D" }
-$LS_URL        = if ($env:LANSWEEPER_URL) { $env:LANSWEEPER_URL } else { "https://mxpcorls01:82" }
-$LS_DOMAIN     = if ($env:LANSWEEPER_DOMAIN) { $env:LANSWEEPER_DOMAIN } else { "MAXOR" }
-$CS_BASE       = if ($env:CROWDSTRIKE_BASE_URL) { $env:CROWDSTRIKE_BASE_URL } else { "https://falcon.us-2.crowdstrike.com" }
+$RAPID7_LOGS = if ($env:RAPID7_AZURE_INGRESS_LOGS) { $env:RAPID7_AZURE_INGRESS_LOGS } else { "%5B%222186bedc4-1ee4-4728-a970-43575fb22d9d%22%5D" }
+$LS_URL = if ($env:LANSWEEPER_URL) { $env:LANSWEEPER_URL } else { "https://mxpcorls01:82" }
+$LS_DOMAIN = if ($env:LANSWEEPER_DOMAIN) { $env:LANSWEEPER_DOMAIN } else { "MAXOR" }
+$CS_BASE = if ($env:CROWDSTRIKE_BASE_URL) { $env:CROWDSTRIKE_BASE_URL } else { "https://falcon.us-2.crowdstrike.com" }
 
 # Column Aliases
 $script:ColumnAliases = @{
@@ -76,7 +76,8 @@ function Parse-EventTime {
     try { 
         $dt = [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal)
         return [datetime]::SpecifyKind($dt, [System.DateTimeKind]::Utc)
-    } catch { return $null }
+    }
+    catch { return $null }
 }
 
 function Get-Frequency {
@@ -144,11 +145,11 @@ function Build-TicketStory {
 function Get-ScopeButtons {
     param($BaseUrl, $ToolType, $TimeObj)
     $scopes = @(
-        @{ Label = "1m";  Offset = 30 }
-        @{ Label = "5m";  Offset = 150 }
-        @{ Label = "1h";  Offset = 1800 }
+        @{ Label = "1m"; Offset = 30 }
+        @{ Label = "5m"; Offset = 150 }
+        @{ Label = "1h"; Offset = 1800 }
         @{ Label = "24h"; Offset = 43200 }
-        @{ Label = "7d";  Offset = 302400 }
+        @{ Label = "7d"; Offset = 302400 }
         @{ Label = "30d"; Offset = 1296000 }
     )
     $html = "<div class='scope-group'>"
@@ -159,7 +160,8 @@ function Get-ScopeButtons {
         if ($ToolType -eq "CS") {
             $url = $BaseUrl + "&start=$st&end=$en"
             $html += "<a href='$url' target='_blank' class='scope-btn cs-scope-btn' data-time-params='&start=$st&end=$en'>$($s.Label)</a>"
-        } else {
+        }
+        else {
             $url = $BaseUrl + "&from=$st&to=$en"
             $html += "<a href='$url' target='_blank' class='scope-btn r7-scope-btn' data-time-params='&from=$st&to=$en'>$($s.Label)</a>"
         }
@@ -170,7 +172,7 @@ function Get-ScopeButtons {
 function Write-Report {
     param($Status, $Anchor, $AnchorDevice, $UtcTime, $EstTime, $CstTime, $Decision, $RiskScore, $UniqueFlaws, $IsNewIP, $IsNewLocation, $IsNewApp, $MatrixRows, $Set24h, $Set7d, $Set30d, $CaseFolder, $Rapid7OrgId, $Rapid7LogList, $EncodedIP, $PpUser, $PpSince, $PpUntil, $lsUserUrl, $CsBaseUrl, $ReportFileName, $PrefixInfo)
     
-    $statusBadgeClass = if($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
+    $statusBadgeClass = if ($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
     $reportPath = Join-Path $CaseFolder $ReportFileName
 
     $html = @"
@@ -317,11 +319,11 @@ foreach ($file in $files) {
     try {
         $raw = try { Import-Csv $file.FullName -ErrorAction Stop } catch {
             $c = Get-Content $file.FullName; $hRow = ($c[0] -split ",").Trim(); $seen = @{}; 
-            $sh = foreach($col in $hRow){ $n=if(!$col){"Blank"}else{$col}; if($seen.ContainsKey($n)){$seen[$n]++; "$n`_$($seen[$n])"}else{$seen[$n]=1;$n} }
+            $sh = foreach ($col in $hRow) { $n = if (!$col) { "Blank" }else { $col }; if ($seen.ContainsKey($n)) { $seen[$n]++; "$n`_$($seen[$n])" }else { $seen[$n] = 1; $n } }
             $c | Select-Object -Skip 1 | ConvertFrom-Csv -Header $sh
         }
         $norm = New-Object System.Collections.Generic.List[pscustomobject]
-        foreach($r in $raw){
+        foreach ($r in $raw) {
             $dt = Parse-EventTime (Get-Value -Row $r -ColumnName "Date")
             $uname = Get-Value -Row $r -ColumnName "Username"
             $r | Add-Member -MemberType NoteProperty -Name "EventTime" -Value $dt -Force
@@ -334,31 +336,32 @@ foreach ($file in $files) {
         }
         $data[$file.Name] = $norm
         Write-Host "OK ($($norm.Count) rows)"
-    } catch { Write-Host "FAILED: $($_.Exception.Message)" }
+    }
+    catch { Write-Host "FAILED: $($_.Exception.Message)" }
 }
 
 # Anchor Selection
 Write-Host "`n=== ANCHOR SELECTION ==="
 $anchor = $null
-if($AnchorRequestId){
+if ($AnchorRequestId) {
     $anchor = $flatEvents | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
 }
 
-if($anchor){
+if ($anchor) {
     Write-Host "Found anchor: $($anchor.RequestId)"
     
     $AnchorDevice = [pscustomobject]@{
-        DeviceId = (Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["DeviceId"]).ToUpper()
+        DeviceId        = (Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["DeviceId"]).ToUpper()
         OperatingSystem = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["OperatingSystem"]
-        Browser = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["Browser"]
-        ClientApp = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["ClientApp"]
-        JoinType = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["JoinType"]
-        Compliant = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["Compliant"]
-        Managed = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["Managed"]
-        UserAgent = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["UserAgent"]
+        Browser         = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["Browser"]
+        ClientApp       = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["ClientApp"]
+        JoinType        = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["JoinType"]
+        Compliant       = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["Compliant"]
+        Managed         = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["Managed"]
+        UserAgent       = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["UserAgent"]
     }
     
-    $utcTime = if($anchor.EventTime){ [datetime]::SpecifyKind($anchor.EventTime, [System.DateTimeKind]::Utc) } else { [datetime]::UtcNow }
+    $utcTime = if ($anchor.EventTime) { [datetime]::SpecifyKind($anchor.EventTime, [System.DateTimeKind]::Utc) } else { [datetime]::UtcNow }
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
     
@@ -367,12 +370,12 @@ if($anchor){
     $ppUser = [uri]::EscapeDataString($anchor.Username)
     $ppSince = $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
     $ppUntil = $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $trunc = "Unknown"; if($anchor.Username -and $anchor.Username -match "@"){$trunc = $anchor.Username.Split('@')[0]}elseif($anchor.Username){$trunc=$anchor.Username}
+    $trunc = "Unknown"; if ($anchor.Username -and $anchor.Username -match "@") { $trunc = $anchor.Username.Split('@')[0] }elseif ($anchor.Username) { $trunc = $anchor.Username }
     $lsUserUrl = "$LS_URL/user.aspx?username=$trunc&userdomain=$LS_DOMAIN"
     
     # Filename logic
     $ts = (Get-Date).ToString("yyyyddMM-hhmmssfff tt")
-    $targetLabel = if($AnchorDevice.DeviceId -ne "Unknown") { $AnchorDevice.DeviceId } else { $trunc }
+    $targetLabel = if ($AnchorDevice.DeviceId -ne "Unknown") { $AnchorDevice.DeviceId } else { $trunc }
     $reportFileName = "$ts EST RiskyUserAlert $($targetLabel) report.html"
 
     # IPv6 Prefix Logic
@@ -385,17 +388,17 @@ if($anchor){
     # Advanced Analysis
     Write-Host "Processing Baseline Metrics..."
     $set24h = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }
-    $set7d  = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }
+    $set7d = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }
     $set30d = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }
     
     $isNewIP = Test-IsNewValue -BaselineEvents $set30d -Aliases @("IP address") -Value $anchor.IPAddress
     $isNewDevice = Test-IsNewValue -BaselineEvents $set30d -Aliases $script:ColumnAliases["DeviceId"] -Value $AnchorDevice.DeviceId
     
     $deviceGroups = $set30d | Group-Object { Get-FieldValue -Row $_ -Aliases $script:ColumnAliases["DeviceId"] }
-    $matrixRows = foreach($g in $deviceGroups){
+    $matrixRows = foreach ($g in $deviceGroups) {
         $dId = $g.Name.ToUpper(); $evs = $g.Group
         $ips = $evs.IPAddress | Select-Object -Unique
-        $rowStyle = if($dId -eq $AnchorDevice.DeviceId){"class='anchor-row-highlight'"}else{""}
+        $rowStyle = if ($dId -eq $AnchorDevice.DeviceId) { "class='anchor-row-highlight'" }else { "" }
         "<tr $rowStyle><td>$dId</td><td>$($ips -join ',')</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['OperatingSystem']) / $(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Browser'])</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Compliant'])</td><td>$($evs.Count)</td><td>$(($evs | Sort-Object EventTime -Descending | Select-Object -First 1).EventTime.ToString('yyyy-MM-dd HH:mm'))</td></tr>"
     }
     
@@ -404,7 +407,8 @@ if($anchor){
 
     # Final Report Generation
     Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $decision -RiskScore $riskScore -UniqueFlaws @() -IsNewIP $isNewIP -IsNewLocation $false -IsNewApp $false -MatrixRows $matrixRows -Set24h $set24h -Set7d $set7d -Set30d $set30d -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser $ppUser -PpSince $ppSince -PpUntil $ppUntil -lsUserUrl $lsUserUrl -CsBaseUrl $CS_BASE -ReportFileName $reportFileName -PrefixInfo $prefixInfo
-} else { Write-Host "No anchor found for Request ID: $AnchorRequestId" }
+}
+else { Write-Host "No anchor found for Request ID: $AnchorRequestId" }
 
 Write-Host "`nDONE"
 Write-Host "REGRESSION_CHECK: OK"
