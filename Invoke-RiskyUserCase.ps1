@@ -28,9 +28,16 @@ function Get-Value {
     )
     if ($null -eq $Row) { return $null }
     
-    # Use the hardened Get-FieldValue logic for core values too
-    # This handles "Request ID" vs "RequestID" vs "Date" vs "Date (UTC)"
-    $aliases = @($ColumnName, ($ColumnName -replace ' ', ''), ($ColumnName + " (UTC)"), ($ColumnName -replace ' ', '_'))
+    # Ultra-robust aliases for Entra headers (User Name vs Username vs Date UTC)
+    $aliases = @(
+        $ColumnName, 
+        ($ColumnName -replace ' ', ''), 
+        ($ColumnName + " (UTC)"), 
+        ($ColumnName -replace ' ', '_'),
+        "User", 
+        "User name",
+        "Username"
+    )
     return Get-FieldValue -Row $Row -Aliases $aliases -Default $null
 }
 
@@ -563,7 +570,12 @@ if ($anchor) {
     $ppUser  = [uri]::EscapeDataString($anchor.Username)
 
     # Lansweeper User Pivot Logic
-    $truncatedUser = $anchor.Username.Split('@')[0]
+    $truncatedUser = "Unknown"
+    if ($anchor.Username -and $anchor.Username -match "@") {
+        $truncatedUser = $anchor.Username.Split('@')[0]
+    } elseif ($anchor.Username) {
+        $truncatedUser = $anchor.Username
+    }
     $lsUserUrl = "https://mxpcorls01:82/user.aspx?username=$truncatedUser&userdomain=MAXOR"
 
     $ipVal = $anchor.IPAddress
