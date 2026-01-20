@@ -202,12 +202,14 @@ function Write-Report {
         function copy(text) { navigator.clipboard.writeText(text); alert('Copied: ' + text); }
         function updateDynamicPivots(n) {
             if(!n) return;
-            const b = "$CsBaseUrl/investigate/search?repo=all&query=" + encodeURIComponent("ComputerName='" + n + "' | table @timestamp, ComputerName, UserName, event_simpleName, ImageFileName, CommandLine, LocalAddressIP, RemoteAddressIP");
+            const upperN = n.toUpperCase();
+            const query = upperN + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])";
+            const b = "$CsBaseUrl/investigate/search?repo=all&query=" + encodeURIComponent(query);
             document.querySelectorAll('.cs-scope-btn').forEach(btn => { btn.href = b + btn.getAttribute('data-time-params'); });
             const p = document.getElementById('primary-cs-pivot');
             if(p) p.href = b + p.getAttribute('data-time-params');
-            document.getElementById('cs-host-details').href = "$CsBaseUrl/host-management/hosts?filter=hostname%233A%27" + n + "%27";
-            document.getElementById('current-target-display').innerText = n;
+            document.getElementById('cs-host-details').href = "$CsBaseUrl/host-management/hosts?filter=hostname%233A%27" + upperN + "%27";
+            document.getElementById('current-target-display').innerText = upperN;
         }
     </script>
 </head>
@@ -243,8 +245,12 @@ function Write-Report {
         <div class="grid">
             <div class="card">
                 <span class="label">CrowdStrike EDR</span>
-                $(Get-ScopeButtons -BaseUrl ("$CsBaseUrl/investigate/search?repo=all&query=" + [uri]::EscapeDataString("ComputerName='$($AnchorDevice.DeviceId)' | table @timestamp, ComputerName, UserName, event_simpleName, ImageFileName, CommandLine, LocalAddressIP, RemoteAddressIP")) -ToolType "CS" -TimeObj $UtcTime)
-                <a href="$CsBaseUrl/host-management/hosts?filter=hostname%233A%27$($AnchorDevice.DeviceId)%27" id="cs-host-details" target="_blank" style="font-size:10px; color:var(--blue); display:block; margin-top:10px;">Host Details Page</a>
+                $(
+                    $upperId = $AnchorDevice.DeviceId.ToUpper()
+                    $query = $upperId + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])"
+                    Get-ScopeButtons -BaseUrl ("$CsBaseUrl/investigate/search?repo=all&query=" + [uri]::EscapeDataString($query)) -ToolType "CS" -TimeObj $UtcTime
+                )
+                <a href="$CsBaseUrl/host-management/hosts?filter=hostname%233A%27$($AnchorDevice.DeviceId.ToUpper())%27" id="cs-host-details" target="_blank" style="font-size:10px; color:var(--blue); display:block; margin-top:10px;">Host Details Page</a>
             </div>
             <div class="card">
                 <span class="label">Lansweeper User</span>
