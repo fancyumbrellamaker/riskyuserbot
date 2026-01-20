@@ -1,11 +1,11 @@
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory = $true)]
     [string] $CaseFolder,
 
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [string] $AlertTime,
 
-    [Parameter(Mandatory=$false)]
+    [Parameter(Mandatory = $false)]
     [string] $AnchorRequestId
 )
 
@@ -23,14 +23,31 @@ function Fail {
 
 function Get-Value {
     param(
-        [Parameter(Mandatory=$true)] $Row,
-        [Parameter(Mandatory=$true)] [string] $ColumnName
+        [Parameter(Mandatory = $true)] $Row,
+        [Parameter(Mandatory = $true)] [string] $ColumnName
     )
     if ($null -eq $Row) { return $null }
     
-    # Use the hardened Get-FieldValue logic for core values too
-    # This handles "Request ID" vs "RequestID" vs "Date" vs "Date (UTC)"
-    $aliases = @($ColumnName, ($ColumnName -replace ' ', ''), ($ColumnName + " (UTC)"), ($ColumnName -replace ' ', '_'))
+    # Priority 1: Exact direct property access (fastest and safest)
+    if ($Row.PSObject -and $Row.PSObject.Properties[$ColumnName]) {
+        return $Row.$ColumnName.ToString().Trim()
+    }
+
+    # Priority 2: Standard aliases
+    $aliases = @(
+        $ColumnName, 
+        ($ColumnName -replace ' ', ''), 
+        ($ColumnName + " (UTC)"),
+        "User" # Common Entra variation
+    )
+    
+    foreach ($a in $aliases) {
+        if ($Row.PSObject -and $Row.PSObject.Properties[$a]) {
+            return $Row.$a.ToString().Trim()
+        }
+    }
+
+    # Priority 3: Case-insensitive fallback
     return Get-FieldValue -Row $Row -Aliases $aliases -Default $null
 }
 
@@ -41,7 +58,8 @@ function Parse-EventTime {
         # Ensure the time is parsed as UTC
         $dt = [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal)
         return [datetime]::SpecifyKind($dt, [System.DateTimeKind]::Utc)
-    } catch { return $null }
+    }
+    catch { return $null }
 }
 
 function Normalize-Row {
@@ -81,20 +99,21 @@ $ColumnAliases = @{
 function Get-ScopeButtons {
     param($BaseUrl, $ToolType, $TimeObj)
     $scopes = @(
-        @{ Label = "5m";  Offset = 150 }
-        @{ Label = "1h";  Offset = 1800 }
+        @{ Label = "5m"; Offset = 150 }
+        @{ Label = "1h"; Offset = 1800 }
         @{ Label = "24h"; Offset = 43200 }
-        @{ Label = "7d";  Offset = 302400 }
+        @{ Label = "7d"; Offset = 302400 }
         @{ Label = "30d"; Offset = 1296000 }
     )
     
     # 1. Calculate the Primary 1-Minute Pivot (The "Immediately Viewable" Minute)
     $start1m = ([datetimeoffset]::new($TimeObj.AddSeconds(-30))).ToUnixTimeMilliseconds()
-    $end1m   = ([datetimeoffset]::new($TimeObj.AddSeconds(30))).ToUnixTimeMilliseconds()
+    $end1m = ([datetimeoffset]::new($TimeObj.AddSeconds(30))).ToUnixTimeMilliseconds()
     if ($ToolType -eq "CS") {
         $primaryUrl = $BaseUrl + "&start=$start1m&end=$end1m"
         $html = "<a href='$primaryUrl' target='_blank' class='primary-pivot-btn' id='primary-cs-pivot' data-time-params='&start=$start1m&end=$end1m'>PIVOT TO EXACT MINUTE</a>"
-    } else {
+    }
+    else {
         $primaryUrl = $BaseUrl + "&from=$start1m&to=$end1m"
         $html = "<a href='$primaryUrl' target='_blank' class='primary-pivot-btn' id='primary-r7-pivot' data-time-params='&from=$start1m&to=$end1m'>PIVOT TO EXACT MINUTE</a>"
     }
@@ -102,14 +121,15 @@ function Get-ScopeButtons {
     $html += "<div class='scope-group'>"
     foreach ($s in $scopes) {
         $start = $TimeObj.AddSeconds(-$s.Offset)
-        $end   = $TimeObj.AddSeconds($s.Offset)
+        $end = $TimeObj.AddSeconds($s.Offset)
         
         if ($ToolType -eq "CS") {
             $f = [long]([datetimeoffset]::new($start).ToUnixTimeMilliseconds())
             $t = [long]([datetimeoffset]::new($end).ToUnixTimeMilliseconds())
             $url = $BaseUrl + "&start=$f&end=$t"
             $html += "<a href='$url' target='_blank' class='scope-btn cs-scope-btn' data-time-params='&start=$f&end=$t'>$($s.Label)</a>"
-        } else {
+        }
+        else {
             $f = [long]([datetimeoffset]::new($start).ToUnixTimeMilliseconds())
             $t = [long]([datetimeoffset]::new($end).ToUnixTimeMilliseconds())
             $url = $BaseUrl + "&from=$f&to=$t"
@@ -121,8 +141,8 @@ function Get-ScopeButtons {
 
 function Get-FieldValue {
     param(
-        [Parameter(Mandatory=$false)] $Row,
-        [Parameter(Mandatory=$true)] [string[]] $Aliases,
+        [Parameter(Mandatory = $false)] $Row,
+        [Parameter(Mandatory = $true)] [string[]] $Aliases,
         $Default = "Unknown"
     )
     if ($null -eq $Row) { return $Default }
@@ -130,7 +150,8 @@ function Get-FieldValue {
     $props = @()
     if ($Row.PSObject -and $Row.PSObject.Properties) {
         $props = $Row.PSObject.Properties.Name
-    } elseif ($Row -is [System.Collections.IDictionary]) {
+    }
+    elseif ($Row -is [System.Collections.IDictionary]) {
         $props = $Row.Keys
     }
 
@@ -150,34 +171,34 @@ function Get-FieldValue {
 
 function Get-TopCounts {
     param(
-        [Parameter(Mandatory=$true)] $Events,
-        [Parameter(Mandatory=$true)] [string] $PropertyName,
+        [Parameter(Mandatory = $true)] $Events,
+        [Parameter(Mandatory = $true)] [string] $PropertyName,
         [int] $Top = 5
     )
     if ($null -eq $Events -or $Events.Count -eq 0) { return @() }
     $Events |
-        Where-Object { $_.$PropertyName -and $_.$PropertyName.ToString().Trim() -ne "" } |
-        Group-Object -Property $PropertyName |
-        Sort-Object Count -Descending |
-        Select-Object -First $Top |
-        ForEach-Object { [pscustomobject]@{ Name = $_.Name; Count = $_.Count } }
+    Where-Object { $_.$PropertyName -and $_.$PropertyName.ToString().Trim() -ne "" } |
+    Group-Object -Property $PropertyName |
+    Sort-Object Count -Descending |
+    Select-Object -First $Top |
+    ForEach-Object { [pscustomobject]@{ Name = $_.Name; Count = $_.Count } }
 }
 
 function Test-IsNewValue {
     param(
-        [Parameter(Mandatory=$true)] $BaselineEvents,
-        [Parameter(Mandatory=$true)] [string] $PropertyName,
-        [Parameter(Mandatory=$true)] $Value
+        [Parameter(Mandatory = $true)] $BaselineEvents,
+        [Parameter(Mandatory = $true)] [string] $PropertyName,
+        [Parameter(Mandatory = $true)] $Value
     )
     if ($null -eq $Value -or $Value.ToString().Trim() -eq "") { return $false }
     $existing = $BaselineEvents |
-        Where-Object { $_.$PropertyName -and $_.$PropertyName.ToString().Trim() -ne "" } |
-        Select-Object -ExpandProperty $PropertyName -Unique
+    Where-Object { $_.$PropertyName -and $_.$PropertyName.ToString().Trim() -ne "" } |
+    Select-Object -ExpandProperty $PropertyName -Unique
     return -not ($existing -contains $Value)
 }
 
 function Get-DecisionBucket {
-    param([Parameter(Mandatory=$true)] $Anchor, $Score)
+    param([Parameter(Mandatory = $true)] $Anchor, $Score)
     if ($null -eq $Anchor) { return "unknown" }
     
     $status = if ($Anchor.Status) { $Anchor.Status.ToString().ToLower() } else { "" }
@@ -232,9 +253,9 @@ function Get-Frequency {
     foreach ($set in $Datasets) {
         if ($null -ne $set) {
             $total += ($set | Where-Object { 
-                $v = Get-FieldValue -Row $_ -Aliases $Aliases
-                $v -ieq $Value 
-            }).Count
+                    $v = Get-FieldValue -Row $_ -Aliases $Aliases
+                    $v -ieq $Value 
+                }).Count
         }
     }
     return $total
@@ -264,8 +285,8 @@ function Get-LastSeen {
 
 function Build-TicketStory {
     param(
-        [Parameter(Mandatory=$true)] $Anchor,
-        [Parameter(Mandatory=$true)] [string] $DecisionBucket,
+        [Parameter(Mandatory = $true)] $Anchor,
+        [Parameter(Mandatory = $true)] [string] $DecisionBucket,
         [bool] $IsNewIP,
         [bool] $IsNewLocation,
         [bool] $IsNewApp
@@ -340,7 +361,8 @@ Write-Host "`n=== DIAGNOSTICS ==="
 if ($foundFiles.Count -eq 0) {
     Write-Host "No CSV files found in $CaseFolder"
     $designFlaws += "DF01 MissingFiles"
-} else {
+}
+else {
     foreach ($file in $foundFiles) {
         try {
             # DF14 DuplicateHeaders Check (Before Import-Csv)
@@ -370,7 +392,8 @@ if ($foundFiles.Count -eq 0) {
             # Robust Import-Csv handling duplicate headers (e.g. "Incoming token type")
             $raw = try { 
                 Import-Csv $file.FullName -ErrorAction Stop 
-            } catch {
+            }
+            catch {
                 $rawContent = Get-Content $file.FullName
                 $headerList = ($rawContent[0] -split ",").Trim()
                 $seen = @{}; $sanitizedHeaders = foreach ($h in $headerList) {
@@ -458,28 +481,29 @@ if ($foundFiles.Count -eq 0) {
             }
             elseif ($file.Name -match "AppSignIns") { $presence["AppSignIns"] = $true }
             elseif ($file.Name -match "MSISignIns") { $presence["MSISignIns"] = $true }
-        } catch {
+        }
+        catch {
             Write-Warning "Failed to load $($file.Name): $($_.Exception.Message)"
             $designFlaws += "DF04 DateParseFailure ($($file.Name))"
         }
     }
 }
 
-    # DF19 NonInteractiveOnlyCase
-    $hasInt = $presence["Interactive"]
-    $hasNi = $presence["NonInteractive"]
-    if (-not $hasInt -and $hasNi) {
-        $designFlaws += "DF19 NonInteractiveOnlyCase"
-        Write-Host "Case appears to be Non-Interactive only."
-    }
+# DF19 NonInteractiveOnlyCase
+$hasInt = $presence["Interactive"]
+$hasNi = $presence["NonInteractive"]
+if (-not $hasInt -and $hasNi) {
+    $designFlaws += "DF19 NonInteractiveOnlyCase"
+    Write-Host "Case appears to be Non-Interactive only."
+}
 
-    # DF20 InteractiveOnlyCase
-    if ($hasInt -and -not $hasNi) {
-        $designFlaws += "DF20 InteractiveOnlyCase"
-        Write-Host "Case appears to be Interactive only."
-    }
+# DF20 InteractiveOnlyCase
+if ($hasInt -and -not $hasNi) {
+    $designFlaws += "DF20 InteractiveOnlyCase"
+    Write-Host "Case appears to be Interactive only."
+}
 
-    Write-Host "`nDataset Types Present:"
+Write-Host "`nDataset Types Present:"
 foreach ($type in $presence.Keys | Sort-Object) {
     $status = if ($presence[$type]) { "[PRESENT]" } else { "[MISSING]" }
     Write-Host "  $type`: $status"
@@ -491,7 +515,8 @@ $anchor = $null
 
 if ([string]::IsNullOrWhiteSpace($AnchorRequestId)) {
     Write-Host "No -AnchorRequestId provided. Skipping anchor selection."
-} else {
+}
+else {
     # Search Order: Interactive then Non-Interactive
     $searchOrder = $data.Keys | Sort-Object { if ($_ -match "InteractiveSignIns" -and $_ -notmatch "AuthDetails") { 0 } else { 1 } }
     foreach ($key in $searchOrder) {
@@ -538,7 +563,8 @@ if ($anchor) {
     $utcTime = [datetime]::UtcNow # Absolute fallback
     if ($anchor.EventTime -is [datetime]) {
         $utcTime = [datetime]::SpecifyKind($anchor.EventTime, [System.DateTimeKind]::Utc)
-    } elseif ($anchor.EventTime -is [string] -and -not [string]::IsNullOrWhiteSpace($anchor.EventTime)) {
+    }
+    elseif ($anchor.EventTime -is [string] -and -not [string]::IsNullOrWhiteSpace($anchor.EventTime)) {
         $parsed = Parse-EventTime $anchor.EventTime
         if ($parsed) { 
             # Force kind to UTC if the string doesn't specify it
@@ -551,22 +577,23 @@ if ($anchor) {
 
     # Generate Epochs for Tool URLs (+/- 12 hours for 24h scope)
     $startTime = $utcTime.AddHours(-12)
-    $endTime   = $utcTime.AddHours(12)
-    $fromMs    = [long]([datetimeoffset]::new($startTime).ToUnixTimeMilliseconds())
-    $toMs      = [long]([datetimeoffset]::new($endTime).ToUnixTimeMilliseconds())
-    $fromSec   = [datetimeoffset]::new($startTime).ToUnixTimeSeconds()
-    $toSec     = [datetimeoffset]::new($endTime).ToUnixTimeSeconds()
+    $endTime = $utcTime.AddHours(12)
+    $fromMs = [long]([datetimeoffset]::new($startTime).ToUnixTimeMilliseconds())
+    $toMs = [long]([datetimeoffset]::new($endTime).ToUnixTimeMilliseconds())
+    $fromSec = [datetimeoffset]::new($startTime).ToUnixTimeSeconds()
+    $toSec = [datetimeoffset]::new($endTime).ToUnixTimeSeconds()
 
     # Proofpoint 3-Day Lookback (Ending at Anchor)
     $ppSince = $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
     $ppUntil = $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $ppUser  = [uri]::EscapeDataString($anchor.Username)
+    $ppUser = [uri]::EscapeDataString($anchor.Username)
     
     # Lansweeper User Pivot Logic (Dynamic Truncation from CSV)
     $truncatedUser = "Unknown"
     if ($anchor.Username -and $anchor.Username -match "@") {
         $truncatedUser = $anchor.Username.Split('@')[0]
-    } elseif ($anchor.Username) {
+    }
+    elseif ($anchor.Username) {
         $truncatedUser = $anchor.Username
     }
     $lsUserUrl = "https://mxpcorls01:82/user.aspx?username=$truncatedUser&userdomain=MAXOR"
@@ -596,7 +623,8 @@ if ($anchor) {
         if ($d -eq "Unknown") {
             $ua = Get-FieldValue -Row $_ -Aliases $ColumnAliases["UserAgent"]
             if ($ua -ne "Unknown") { "Unknown ($($ua.Substring(0,[math]::Min(30, $ua.Length))))" } else { "Unknown Device" }
-        } else { $d }
+        }
+        else { $d }
     }
     
     $matrixRows = foreach ($g in $deviceGroups) {
@@ -614,8 +642,8 @@ if ($anchor) {
 
         # Security Posture logic
         $compliances = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["Compliant"] } | Select-Object -Unique
-        $joins       = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["JoinType"] } | Select-Object -Unique
-        $isAppOnly   = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["ClientApp"] } | Where-Object { $_ -match "App|Service" } | Select-Object -First 1
+        $joins = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["JoinType"] } | Select-Object -Unique
+        $isAppOnly = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["ClientApp"] } | Where-Object { $_ -match "App|Service" } | Select-Object -First 1
         
         # Last Seen Logic
         $lastSeenTime = ($groupEvents | Sort-Object EventTime -Descending | Select-Object -First 1).EventTime
@@ -623,7 +651,7 @@ if ($anchor) {
 
         # Frequency windows
         $c24 = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }).Count
-        $c7  = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }).Count
+        $c7 = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }).Count
         $c30 = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }).Count
         $totalFreq = $groupEvents.Count
 
@@ -652,7 +680,7 @@ if ($anchor) {
 
     # Baseline side-by-side datasets
     $set24h = $data.Keys | Where-Object { $_ -match "24h" } | ForEach-Object { $data[$_] }
-    $set7d  = $data.Keys | Where-Object { $_ -match "7d" } | ForEach-Object { $data[$_] }
+    $set7d = $data.Keys | Where-Object { $_ -match "7d" } | ForEach-Object { $data[$_] }
     $set30d = $data.Keys | Where-Object { $_ -match "30d" } | ForEach-Object { $data[$_] }
     if (-not $set24h) { $set24h = @($anchor) }
     if (-not $set7d) { $set7d = @($anchor) }
@@ -726,7 +754,8 @@ if ($anchor) {
             Write-Host "WARNING: Baseline data is outside 45-day window: $($outOfRange -join ', ')"
         }
     }
-} else {
+}
+else {
     if (-not [string]::IsNullOrWhiteSpace($AnchorRequestId)) {
         $designFlaws += "DF05 AnchorNotFound"
         Write-Host "Anchor Request ID '$AnchorRequestId' not found in any loaded dataset."
@@ -828,7 +857,8 @@ if ($designFlaws.Count -gt 0) {
     if ($uniqueFlaws -match "DF20") {
         Write-Host "DF20 InteractiveOnlyCase: HINT: Investigation is limited to interactive sign-ins. Review if the user has non-interactive activity that might be missed."
     }
-} else {
+}
+else {
     Write-Host "None"
 }
 
@@ -861,7 +891,7 @@ if ($anchor) {
     $reportFileName = "$($timestamp)_$($safeUser)_RiskyUserAlert.html"
     $reportPath = Join-Path $CaseFolder $reportFileName
 
-    $statusBadgeClass = if($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
+    $statusBadgeClass = if ($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
 
     $htmlHeader = @"
 <!DOCTYPE html>
