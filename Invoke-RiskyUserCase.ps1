@@ -31,6 +31,8 @@ function Get-Value {
     # Use the hardened Get-FieldValue logic for core values too
     # This handles "Request ID" vs "RequestID" vs "Date" vs "Date (UTC)"
     $aliases = @($ColumnName, ($ColumnName -replace ' ', ''), ($ColumnName + " (UTC)"), ($ColumnName -replace ' ', '_'))
+    if ($ColumnName -eq "Username") { $aliases += "User" }
+    
     return Get-FieldValue -Row $Row -Aliases $aliases -Default $null
 }
 
@@ -310,553 +312,43 @@ function Test-Columns {
     }
 }
 
-# -------------------------
-# Main
-# -------------------------
-
-$designFlaws = @() # Correctly initialize as an array
-
-if (-not (Test-Path $CaseFolder)) {
-    $designFlaws += "DF01 MissingFiles"
-}
-
-$foundFiles = Get-ChildItem -Path $CaseFolder -Filter "*.csv" -ErrorAction SilentlyContinue
-if ($null -eq $foundFiles -or $foundFiles.Count -eq 0) {
-    if ("DF01 MissingFiles" -notin $designFlaws) { $designFlaws += "DF01 MissingFiles" }
-}
-
-$data = @{}
-$presence = @{
-    "Interactive"    = $false
-    "NonInteractive" = $false
-    "AuthDetails"    = $false
-    "AppSignIns"     = $false
-    "MSISignIns"     = $false
-}
-
-# --- DIAGNOSTICS ---
-Write-Host "`n=== DIAGNOSTICS ==="
-
-if ($foundFiles.Count -eq 0) {
-    Write-Host "No CSV files found in $CaseFolder"
-    $designFlaws += "DF01 MissingFiles"
-} else {
-    foreach ($file in $foundFiles) {
-        try {
-            # DF14 DuplicateHeaders Check (Before Import-Csv)
-            $rawHeaders = Get-Content $file.FullName -TotalCount 1
-            if ($rawHeaders -match ",,") {
-                $designFlaws += "DF14 DuplicateHeaders ($($file.Name): Blank header detected)"
-            }
-            $headerList = ($rawHeaders -split ",").Trim()
-            $duplicates = $headerList | Group-Object | Where-Object { $_.Count -gt 1 }
-            if ($duplicates) {
-                $designFlaws += "DF14 DuplicateHeaders ($($file.Name): $($duplicates.Name -join ', '))"
-            }
-
-            # DF18 ExportTypeMismatch
-            $isInteractiveName = $file.Name -match "^InteractiveSignIns" -and $file.Name -notmatch "AuthDetails"
-            $isNonInteractiveName = $file.Name -match "^NonInteractive"
-            $hasDate = $headerList -contains "Date"
-            $hasDateUtc = $headerList -contains "Date (UTC)"
-
-            if ($isInteractiveName -and $hasDateUtc -and -not $hasDate) {
-                $designFlaws += "DF18 ExportTypeMismatch ($($file.Name): Found Date (UTC) in Interactive file)"
-            }
-            if ($isNonInteractiveName -and $hasDate -and -not $hasDateUtc) {
-                $designFlaws += "DF18 ExportTypeMismatch ($($file.Name): Found Date in Non-Interactive file)"
-            }
-
-            # Robust Import-Csv handling duplicate headers (e.g. "Incoming token type")
-            $raw = try { 
-                Import-Csv $file.FullName -ErrorAction Stop 
-            } catch {
-                $rawContent = Get-Content $file.FullName
-                $headerList = ($rawContent[0] -split ",").Trim()
-                $seen = @{}; $sanitizedHeaders = foreach ($h in $headerList) {
-                    $name = if ([string]::IsNullOrWhiteSpace($h)) { "BlankHeader" } else { $h }
-                    if ($seen.ContainsKey($name)) { $seen[$name]++; "$name`_$($seen[$name])" } else { $seen[$name] = 1; $name }
-                }
-                $rawContent | Select-Object -Skip 1 | ConvertFrom-Csv -Header $sanitizedHeaders
-            }
-            
-            # Fix dataset detection to exclude AuthDetails from sign-in validation
-            $isAuth = $file.Name -match "AuthDetails"
-            if ($file.Name -match "InteractiveSignIns" -and -not $isAuth) {
-                Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
-            }
-            elseif ($file.Name -match "NonInteractive" -and -not $isAuth) {
-                Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date (UTC)", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
-            }
-
-            # DF04 Date Parse Tracking + Normalization (Single Pass)
-            $dateCol = if ($file.Name -match "NonInteractive") { "Date (UTC)" } else { "Date" }
-            $failCount = 0; $samples = @()
-            $normalized = New-Object System.Collections.Generic.List[pscustomobject]
-            
-            foreach ($r in $raw) {
-                $dtValue = Get-Value -Row $r -ColumnName $dateCol
-                $dt = Parse-EventTime $dtValue
-                
-                if ($null -eq $dt -and -not [string]::IsNullOrWhiteSpace($dtValue)) {
-                    $failCount++
-                    if ($samples.Count -lt 3) { $samples += $dtValue }
-                }
-                
-                # Add normalized properties directly to the CSV object for maximum data retention
-                $r | Add-Member -MemberType NoteProperty -Name "EventTime" -Value $dt -Force
-                $r | Add-Member -MemberType NoteProperty -Name "RequestId" -Value (Get-Value -Row $r -ColumnName "Request ID") -Force
-                $r | Add-Member -MemberType NoteProperty -Name "IPAddress" -Value (Get-Value -Row $r -ColumnName "IP address") -Force
-                $r | Add-Member -MemberType NoteProperty -Name "MfaResult" -Value "N/A" -Force
-                $r | Add-Member -MemberType NoteProperty -Name "ConditionalAccess" -Value (Get-FieldValue -Row $r -Aliases @("Conditional Access")) -Force
-                
-                $normalized.Add($r)
-            }
-
-            if ($raw.Count -gt 0 -and ($failCount / $raw.Count) -gt 0.3) {
-                $designFlaws += "DF04 DateParseFailure ($($file.Name))"
-                Write-Host "ERROR: Dataset '$($file.Name)' date parse failure rate: $([math]::Round(($failCount/$raw.Count)*100))%. Samples: $($samples -join ', ')"
-            }
-
-            if ($null -eq $raw -or $raw.Count -eq 0) {
-                $designFlaws += "DF02 EmptyDataset ($($file.Name))"
-            }
-            if ($raw.Count -gt 50000) {
-                $designFlaws += "DF13 TooManyEventsTruncated ($($file.Name): $($raw.Count) rows)"
-            }
-
-            # DF15 MixedTenantNoise
-            $tenantIds = $raw | ForEach-Object { Get-Value -Row $_ -ColumnName "Home tenant ID" } | Where-Object { $_ }
-            if ($tenantIds) {
-                $tenantGroups = $tenantIds | Group-Object
-                if ($tenantGroups.Count -gt 1) {
-                    $topTenants = $tenantGroups | Sort-Object Count -Descending | Select-Object -First 5 | ForEach-Object { "$($_.Name) ($($_.Count))" }
-                    $designFlaws += "DF15 MixedTenantNoise ($($file.Name): $($topTenants -join ', '))"
-                }
-            }
-
-            # Store normalized data for datasets
-            $data[$file.Name] = $normalized
-            Write-Host "Loaded: $($file.Name) ($($raw.Count) rows)"
-            
-            if ($file.Name -match "AuthDetails") { $presence["AuthDetails"] = $true }
-            elseif ($file.Name -match "NonInteractive") { $presence["NonInteractive"] = $true }
-            elseif ($file.Name -match "InteractiveSignIns") { 
-                $presence["Interactive"] = $true
-                # DF06 Join Rate Check
-                $authKey = $file.Name.Replace("InteractiveSignIns", "InteractiveSignIns_AuthDetails")
-                if (Test-Path (Join-Path $CaseFolder $authKey)) {
-                    $authRaw = Import-Csv (Join-Path $CaseFolder $authKey)
-                    $ids = $raw | ForEach-Object { Get-Value -Row $_ -ColumnName "Request ID" } | Where-Object { $_ } | Select-Object -Unique
-                    $authIds = $authRaw | ForEach-Object { Get-Value -Row $_ -ColumnName "Request ID" } | Where-Object { $_ } | Select-Object -Unique
-                    $matches = $ids | Where-Object { $_ -in $authIds }
-                    $rate = if ($ids.Count -gt 0) { ($matches.Count / $ids.Count) * 100 } else { 100 }
-                    if ($ids.Count -gt 0 -and $rate -lt 20) {
-                        $designFlaws += "DF06 JoinRateLow ($($file.Name): $([math]::Round($rate))%)"
-                    }
-                }
-            }
-            elseif ($file.Name -match "AppSignIns") { $presence["AppSignIns"] = $true }
-            elseif ($file.Name -match "MSISignIns") { $presence["MSISignIns"] = $true }
-        } catch {
-            Write-Warning "Failed to load $($file.Name): $($_.Exception.Message)"
-            $designFlaws += "DF04 DateParseFailure ($($file.Name))"
-        }
-    }
-}
-
-    # DF19 NonInteractiveOnlyCase
-    $hasInt = $presence["Interactive"]
-    $hasNi = $presence["NonInteractive"]
-    if (-not $hasInt -and $hasNi) {
-        $designFlaws += "DF19 NonInteractiveOnlyCase"
-        Write-Host "Case appears to be Non-Interactive only."
-    }
-
-    # DF20 InteractiveOnlyCase
-    if ($hasInt -and -not $hasNi) {
-        $designFlaws += "DF20 InteractiveOnlyCase"
-        Write-Host "Case appears to be Interactive only."
-    }
-
-    Write-Host "`nDataset Types Present:"
-foreach ($type in $presence.Keys | Sort-Object) {
-    $status = if ($presence[$type]) { "[PRESENT]" } else { "[MISSING]" }
-    Write-Host "  $type`: $status"
-}
-
-# --- ANCHOR ---
-Write-Host "`n=== ANCHOR ==="
-$anchor = $null
-
-if ([string]::IsNullOrWhiteSpace($AnchorRequestId)) {
-    Write-Host "No -AnchorRequestId provided. Skipping anchor selection."
-} else {
-    # Search Order: Interactive then Non-Interactive
-    $searchOrder = $data.Keys | Sort-Object { if ($_ -match "InteractiveSignIns" -and $_ -notmatch "AuthDetails") { 0 } else { 1 } }
-    foreach ($key in $searchOrder) {
-        if ($key -match "AuthDetails") { continue }
-        $match = $data[$key] | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
-        if ($match) {
-            $anchor = $match
-            Write-Host "Found anchor in: $key"
-            
-            # Link AuthDetails if Interactive
-            if ($key -match "InteractiveSignIns") {
-                $authKey = $key.Replace("InteractiveSignIns", "InteractiveSignIns_AuthDetails")
-                if ($data.ContainsKey($authKey)) {
-                    $authMatch = $data[$authKey] | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
-                    if ($authMatch) { $anchor.MfaResult = $authMatch.Status }
-                }
-            }
-            break
-        }
-    }
-}
-
-if ($anchor) {
-    $anchor | Format-List EventTime, Username, IPAddress, Location, Application, Status, ConditionalAccess, MfaResult, RequestId
-    
-    # --- ANCHOR_DEVICE ---
-    Write-Host "`n=== ANCHOR_DEVICE ==="
-    # Debug properties
-    # $anchor.PSObject.Properties.Name | ForEach-Object { Write-Host "DEBUG PROP: $_" }
-    
-    $AnchorDevice = [pscustomobject]@{
-        DeviceId        = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["DeviceId"]
-        OperatingSystem = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["OperatingSystem"]
-        Browser         = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["Browser"]
-        ClientApp       = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["ClientApp"]
-        JoinType        = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["JoinType"]
-        Compliant       = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["Compliant"]
-        Managed         = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["Managed"]
-        UserAgent       = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["UserAgent"]
-    }
-    $AnchorDevice | Format-List
-    
-    # Timezone Conversions (Force UTC source)
-    $utcTime = [datetime]::UtcNow # Absolute fallback
-    if ($anchor.EventTime -is [datetime]) {
-        $utcTime = [datetime]::SpecifyKind($anchor.EventTime, [System.DateTimeKind]::Utc)
-    } elseif ($anchor.EventTime -is [string] -and -not [string]::IsNullOrWhiteSpace($anchor.EventTime)) {
-        $parsed = Parse-EventTime $anchor.EventTime
-        if ($parsed) { 
-            # Force kind to UTC if the string doesn't specify it
-            $utcTime = [datetime]::SpecifyKind($parsed, [System.DateTimeKind]::Utc) 
-        }
-    }
-    
-    $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
-    $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
-
-    # Generate Epochs for Tool URLs (+/- 12 hours for 24h scope)
-    $startTime = $utcTime.AddHours(-12)
-    $endTime   = $utcTime.AddHours(12)
-    $fromMs    = [long]([datetimeoffset]::new($startTime).ToUnixTimeMilliseconds())
-    $toMs      = [long]([datetimeoffset]::new($endTime).ToUnixTimeMilliseconds())
-    $fromSec   = [datetimeoffset]::new($startTime).ToUnixTimeSeconds()
-    $toSec     = [datetimeoffset]::new($endTime).ToUnixTimeSeconds()
-
-    # Proofpoint 3-Day Lookback (Ending at Anchor)
-    $ppSince = $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $ppUntil = $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $ppUser  = [uri]::EscapeDataString($anchor.Username)
-
-    # Lansweeper User Pivot Logic
-    $truncatedUser = $anchor.Username.Split('@')[0]
-    $lsUserUrl = "https://mxpcorls01:82/user.aspx?username=$truncatedUser&userdomain=MAXOR"
-
-    $ipVal = $anchor.IPAddress
-    $prefixInfo = ""
-    $prefix64 = "N/A"
-    if ($ipVal -match ':') {
-        # Extract the /64 prefix (first 4 segments)
-        $segments = $ipVal.Split(':')
-        if ($segments.Count -ge 4) {
-            $prefix64 = ($segments[0..3] -join ':') + "::/64"
-            $prefixInfo = "<div style='font-size:11px; color:var(--orange); margin-top:4px;'>Network Prefix: <span class='value'>$prefix64</span></div>"
-        }
-    }
-    
-    # Dataset Time Windows
-    Write-Host "`nDataset Time Windows:"
-    foreach ($key in $minMax.Keys | Sort-Object) {
-        Write-Host "  $key`: $($minMax[$key].Min.ToString('yyyy-MM-dd')) to $($minMax[$key].Max.ToString('yyyy-MM-dd'))"
-    }
-
-    # --- DEVICE MATRIX LOGIC ---
-    $allEvents = $data.Values | ForEach-Object { $_ }
-    $deviceGroups = $allEvents | Group-Object { 
-        $d = Get-FieldValue -Row $_ -Aliases $ColumnAliases["DeviceId"]
-        if ($d -eq "Unknown") {
-            $ua = Get-FieldValue -Row $_ -Aliases $ColumnAliases["UserAgent"]
-            if ($ua -ne "Unknown") { "Unknown ($($ua.Substring(0,[math]::Min(30, $ua.Length))))" } else { "Unknown Device" }
-        } else { $d }
-    }
-    
-    $matrixRows = foreach ($g in $deviceGroups) {
-        $devId = $g.Name
-        $groupEvents = $g.Group
-        
-        $ips = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases @("IP address") } | Select-Object -Unique
-        $locs = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases @("Location") } | Select-Object -Unique
-        $apps = $groupEvents | Group-Object { Get-FieldValue -Row $_ -Aliases @("Application") } | Sort-Object Count -Descending | Select-Object -First 3 | ForEach-Object { $_.Name }
-        $osBrowser = $groupEvents | ForEach-Object { 
-            $o = Get-FieldValue -Row $_ -Aliases $ColumnAliases["OperatingSystem"]
-            $b = Get-FieldValue -Row $_ -Aliases $ColumnAliases["Browser"]
-            "$o / $b"
-        } | Select-Object -Unique
-
-        # Security Posture logic
-        $compliances = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["Compliant"] } | Select-Object -Unique
-        $joins       = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["JoinType"] } | Select-Object -Unique
-        $isAppOnly   = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["ClientApp"] } | Where-Object { $_ -match "App|Service" } | Select-Object -First 1
-        
-        # Last Seen Logic
-        $lastSeenTime = ($groupEvents | Sort-Object EventTime -Descending | Select-Object -First 1).EventTime
-        $lastSeenStr = if ($lastSeenTime) { $lastSeenTime.ToString("yyyy-MM-dd HH:mm") } else { "Unknown" }
-
-        # Frequency windows
-        $c24 = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }).Count
-        $c7  = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }).Count
-        $c30 = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }).Count
-        $totalFreq = $groupEvents.Count
-
-        $rowClass = if ($devId -eq $AnchorDevice.DeviceId -or $devId -match [regex]::Escape($AnchorDevice.DeviceId)) { "class='anchor-row-highlight'" } else { "" }
-
-        @"
-        <tr $rowClass>
-            <td class="val-col" style="font-size:11px;">$devId</td>
-            <td style="font-size:11px;">$($ips -join ", ")</td>
-            <td style="font-size:11px;">$($locs -join ", ")</td>
-            <td style="font-size:10px; color:var(--blue)">$($osBrowser -join "<br>")</td>
-            <td style="font-size:10px;">
-                <div style="color:$(if($compliances -contains 'True'){'var(--green)'}else{'var(--text-secondary)'})">Compliant: $($compliances -join '/')</div>
-                <div style="color:var(--blue)">Join: $($joins -join '/')</div>
-                $(if($isAppOnly){"<div style='color:var(--orange)'>TYPE: Application</div>"}else{"<div style='color:var(--text-secondary)'>TYPE: User</div>"})
-            </td>
-            <td style="color:var(--text-secondary); font-size:10px;">$($apps -join ", ")</td>
-            <td style="font-size:11px; white-space:nowrap;">$lastSeenStr</td>
-            <td class="freq-cell" style="color:var(--text-primary)">$totalFreq</td>
-            <td class="freq-cell $(if($c24 -eq 0){'zero'})">$c24</td>
-            <td class="freq-cell $(if($c7 -eq 0){'zero'})">$c7</td>
-            <td class="freq-cell $(if($c30 -eq 0){'zero'})">$c30</td>
-        </tr>
-"@
-    }
-
-    # Baseline side-by-side datasets
-    $set24h = $data.Keys | Where-Object { $_ -match "24h" } | ForEach-Object { $data[$_] }
-    $set7d  = $data.Keys | Where-Object { $_ -match "7d" } | ForEach-Object { $data[$_] }
-    $set30d = $data.Keys | Where-Object { $_ -match "30d" } | ForEach-Object { $data[$_] }
-    if (-not $set24h) { $set24h = @($anchor) }
-    if (-not $set7d) { $set7d = @($anchor) }
-    if (-not $set30d) { $set30d = @($anchor) }
-    
-    # DF07 UserMismatch
-    $baselineUsers = @()
-    if ($data.ContainsKey("InteractiveSignIns_7d.csv")) { 
-        $list = $data["InteractiveSignIns_7d.csv"] | ForEach-Object { $_.Username }
-        if ($list) { $baselineUsers += $list }
-    }
-    if ($data.ContainsKey("InteractiveSignIns_30d.csv")) { 
-        $list = $data["InteractiveSignIns_30d.csv"] | ForEach-Object { $_.Username }
-        if ($list) { $baselineUsers += $list }
-    }
-    
-    if ($baselineUsers) {
-        $uniqueBaselineUsers = $baselineUsers | Select-Object -Unique
-        if ($anchor.Username -and $anchor.Username -notin $uniqueBaselineUsers) {
-            $designFlaws += "DF07 UserMismatch ($($anchor.Username) not in baseline)"
-        }
-    }
-
-    # DF09 LocationMissing
-    if ([string]::IsNullOrWhiteSpace($anchor.Location) -or $anchor.Location -ieq "Unknown") {
-        $designFlaws += "DF09 LocationMissing (IP: $($anchor.IPAddress))"
-    }
-
-    # DF10 IPMissing
-    if ([string]::IsNullOrWhiteSpace($anchor.IPAddress)) {
-        $designFlaws += "DF10 IPMissing"
-    }
-
-    # DF11 AppMissing
-    if ([string]::IsNullOrWhiteSpace($anchor.Application)) {
-        $designFlaws += "DF11 AppMissing"
-    }
-
-    # DF16 ConditionalAccessUnknown
-    if ([string]::IsNullOrWhiteSpace($anchor.ConditionalAccess) -or $anchor.ConditionalAccess -in @("Unknown", "Not Available", "None")) {
-        $designFlaws += "DF16 ConditionalAccessUnknown"
-    }
-
-    # DF17 MFAUnknown
-    $isMfaBlank = [string]::IsNullOrWhiteSpace($anchor.MfaResult) -or $anchor.MfaResult -in @("Unknown", "N/A")
-    $isAuthMissingOrLow = (-not $presence["AuthDetails"]) -or ($designFlaws -match "DF06")
-    if ($isMfaBlank -and $isAuthMissingOrLow) {
-        $designFlaws += "DF17 MFAUnknown"
-    }
-
-    # DF08 TimeWindowMismatch
-    $minMax = @{}
-    foreach ($key in $data.Keys) {
-        $dates = $data[$key].EventTime | Where-Object { $_ -ne $null }
-        if ($dates) {
-            $sorted = $dates | Sort-Object
-            $minMax[$key] = @{ Min = $sorted[0]; Max = $sorted[-1] }
-        }
-    }
-    
-    if ($anchor.EventTime) {
-        $threshold = $anchor.EventTime.AddDays(-45)
-        $outOfRange = @()
-        foreach ($key in $minMax.Keys) {
-            if ($key -match "7d|30d" -and $minMax[$key].Max -lt $threshold) {
-                $outOfRange += "$key (max: $($minMax[$key].Max.ToShortDateString()))"
-            }
-        }
-        if ($outOfRange) {
-            $designFlaws += "DF08 TimeWindowMismatch"
-            Write-Host "WARNING: Baseline data is outside 45-day window: $($outOfRange -join ', ')"
-        }
-    }
-} else {
-    if (-not [string]::IsNullOrWhiteSpace($AnchorRequestId)) {
-        $designFlaws += "DF05 AnchorNotFound"
-        Write-Host "Anchor Request ID '$AnchorRequestId' not found in any loaded dataset."
-        
-        foreach ($key in $data.Keys) {
-            if ($key -match "AuthDetails") { continue }
-            Write-Host "`nTop 10 Newest Request IDs in $key`:"
-            $data[$key] | Sort-Object EventTime -Descending | Select-Object -First 10 | Format-Table EventTime, Username, RequestId, Application -AutoSize
-        }
-    }
-}
-
-# --- BASELINE_7D ---
-Write-Host "`n=== BASELINE_7D ==="
-$data7d = $data.Values | ForEach-Object { $_ } | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }
-if ($data7d) {
-    Write-Host "Top IPAddress:"
-    Get-TopCounts -Events $data7d -PropertyName "IPAddress" | Format-Table -AutoSize
-}
-
-# --- BASELINE_30D ---
-Write-Host "`n=== BASELINE_30D ==="
-$data30d = $data.Values | ForEach-Object { $_ } | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }
-if ($data30d) {
-    Write-Host "Top IPAddress:"
-    Get-TopCounts -Events $data30d -PropertyName "IPAddress" | Format-Table -AutoSize
-}
-
-# DF12 TooFewEventsForBaseline
-$count7d = if ($data7d) { @($data7d).Count } else { 0 }
-$count30d = if ($data30d) { @($data30d).Count } else { 0 }
-if ($count7d -lt 25 -or $count30d -lt 100) {
-    $designFlaws += "DF12 TooFewEventsForBaseline (7d: $count7d, 30d: $count30d)"
-}
-
-# --- NOVELTY ---
-Write-Host "`n=== NOVELTY ==="
-$isNewIP = $false; $isNewLoc = $false; $isNewApp = $false; $isNewDevice = $false
-if ($anchor) {
-    $isNewIP = Test-IsNewValue -BaselineEvents $data30d -PropertyName "IPAddress" -Value $anchor.IPAddress
-    $isNewDevice = Test-IsNewValue -BaselineEvents $data30d -PropertyName "DeviceId" -Value $AnchorDevice.DeviceId
-    
-    Write-Host "New IP: $isNewIP"
-    Write-Host "New Device: $isNewDevice"
-}
-
-# --- DESIGN_FLAWS ---
-Write-Host "`n=== DESIGN_FLAWS ==="
-if ($designFlaws.Count -gt 0) {
-    # Force each flaw onto a new line with explicit Write-Host calls
-    $uniqueFlaws = @($designFlaws) | Select-Object -Unique
-    foreach ($flaw in $uniqueFlaws) {
-        if (-not [string]::IsNullOrWhiteSpace($flaw)) {
-            Write-Host " - $flaw"
-        }
-    }
-    if ($uniqueFlaws -match "DF01") {
-        Write-Host "DF01 MissingFiles: HINT: Export sign-in logs CSVs and place them in the CaseFolder."
-    }
-    if ($uniqueFlaws -match "DF06") {
-        Write-Host "DF06 JoinRateLow: HINT: Join rate is low. Re-export both CSVs ensuring the same Time Range and Filters (e.g. User or Request ID) are applied to both Sign-ins and AuthDetails."
-    }
-    if ($uniqueFlaws -match "DF08") {
-        Write-Host "DF08 TimeWindowMismatch: HINT: Baseline files appear to contain data from a different time period than the anchor."
-    }
-    if ($uniqueFlaws -match "DF09") {
-        Write-Host "DF09 LocationMissing: HINT: Anchor event is missing location data. Check if IP address is from a known VPN or datacenter."
-    }
-    if ($uniqueFlaws -match "DF10") {
-        Write-Host "DF10 IPMissing: HINT: Anchor event is missing an IP address. This can happen with certain managed service identity or app-only sign-ins."
-    }
-    if ($uniqueFlaws -match "DF11") {
-        Write-Host "DF11 AppMissing: HINT: Anchor event is missing Application name. Verify if the sign-in was to a legacy or custom internal resource."
-    }
-    if ($uniqueFlaws -match "DF12") {
-        Write-Host "DF12 TooFewEventsForBaseline: HINT: Baseline event counts are low. Novelty detection may be less reliable until more historical data is provided."
-    }
-    if ($uniqueFlaws -match "DF13") {
-        Write-Host "DF13 TooManyEventsTruncated: HINT: Dataset is very large. Consider exporting a smaller time window or filtering to a specific user to improve performance."
-    }
-    if ($uniqueFlaws -match "DF14") {
-        Write-Host "DF14 DuplicateHeaders: HINT: Duplicate or blank headers detected. Check the first row of the CSV file for errors."
-    }
-    if ($uniqueFlaws -match "DF15") {
-        Write-Host "DF15 MixedTenantNoise: HINT: Multiple tenant IDs detected. This investigation may contain data from different environments or guest accounts."
-    }
-    if ($uniqueFlaws -match "DF16") {
-        Write-Host "DF16 ConditionalAccessUnknown: HINT: Conditional Access status is not available. Review the Azure AD sign-in logs for policy details."
-    }
-    if ($uniqueFlaws -match "DF17") {
-        Write-Host "DF17 MFAUnknown: HINT: MFA result is unknown. This typically means the AuthDetails CSV was missing or didn't contain matching Request IDs for the anchor event."
-    }
-    if ($uniqueFlaws -match "DF18") {
-        Write-Host "DF18 ExportTypeMismatch: HINT: Export type mismatch detected. Entra CSV headers don't match the filename. Verify you didn't rename the files incorrectly."
-    }
-    if ($uniqueFlaws -match "DF19") {
-        Write-Host "DF19 NonInteractiveOnlyCase: HINT: Investigation is limited to non-interactive sign-ins. Manual correlation with user activity in other logs may be required."
-    }
-    if ($uniqueFlaws -match "DF20") {
-        Write-Host "DF20 InteractiveOnlyCase: HINT: Investigation is limited to interactive sign-ins. Review if the user has non-interactive activity that might be missed."
-    }
-} else {
-    Write-Host "None"
-}
-
-# --- DECISION ---
-Write-Host "`n=== DECISION ==="
-$decision = "N/A (No Anchor)"
-$riskScore = 0
-if ($anchor) {
-    $riskScore = Get-RiskScore -Anchor $anchor -IsNewIP $isNewIP -IsNewDevice $isNewDevice -AnchorDevice $AnchorDevice
-    $decision = Get-DecisionBucket -Anchor $anchor -Score $riskScore
-}
-Write-Host "$decision (Risk Score: $riskScore)"
-
-# --- STORY ---
-Write-Host "`n=== STORY ==="
-if ($anchor) {
-    Write-Host (Build-TicketStory -Anchor $anchor -DecisionBucket $decision -IsNewIP $isNewIP -IsNewLocation $isNewLoc -IsNewApp $isNewApp)
-}
-
-# --- HTML REPORT GENERATION ---
-if ($anchor) {
-    # SOC Integration Config
-    $rapid7OrgId = "682B861F32ACBF7D3060"
-    # Target: "Ingress Authentication / Microsoft Azure"
-    $rapid7LogList = "%5B%222186bedc4-1ee4-4728-a970-43575fb22d9d%22%5D" 
-    $encodedIP = [uri]::EscapeDataString($anchor.IPAddress)
-
-    $timestamp = (Get-Date).ToString("yyyyMMdd_HHmmss_fff")
-    $safeUser = $anchor.Username -replace '[^a-zA-Z0-9]', '_'
-    $reportFileName = "$($timestamp)_$($safeUser)_RiskyUserAlert.html"
-    $reportPath = Join-Path $CaseFolder $reportFileName
+function Write-Report {
+    param(
+        [string]$Status = "FINAL",
+        [Parameter(Mandatory=$true)] $Anchor,
+        [Parameter(Mandatory=$true)] $AnchorDevice,
+        [Parameter(Mandatory=$true)] $UtcTime,
+        [Parameter(Mandatory=$true)] $EstTime,
+        [Parameter(Mandatory=$true)] $CstTime,
+        [Parameter(Mandatory=$true)] $Decision,
+        [Parameter(Mandatory=$true)] $RiskScore,
+        [Parameter(Mandatory=$true)] $UniqueFlaws,
+        [Parameter(Mandatory=$true)] $IsNewIP,
+        [Parameter(Mandatory=$true)] $IsNewLocation,
+        [Parameter(Mandatory=$true)] $IsNewApp,
+        [Parameter(Mandatory=$true)] $MatrixRows,
+        [Parameter(Mandatory=$true)] $Set24h,
+        [Parameter(Mandatory=$true)] $Set7d,
+        [Parameter(Mandatory=$true)] $Set30d,
+        [Parameter(Mandatory=$true)] $CaseFolder,
+        [Parameter(Mandatory=$true)] $ColumnAliases,
+        [Parameter(Mandatory=$true)] $Rapid7OrgId,
+        [Parameter(Mandatory=$true)] $Rapid7LogList,
+        [Parameter(Mandatory=$true)] $EncodedIP,
+        [Parameter(Mandatory=$true)] $PpUser,
+        [Parameter(Mandatory=$true)] $PpSince,
+        [Parameter(Mandatory=$true)] $PpUntil,
+        [Parameter(Mandatory=$true)] $FromSec,
+        [Parameter(Mandatory=$true)] $ToSec,
+        [Parameter(Mandatory=$true)] $FromMs,
+        [Parameter(Mandatory=$true)] $ToMs,
+        [Parameter(Mandatory=$true)] $PrefixInfo,
+        [Parameter(Mandatory=$true)] $lsUserUrl
+    )
 
     $statusBadgeClass = if($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
+    $reportFileName = "RiskyUser_TriageReport.html" # Fixed name for easy refreshing
+    $reportPath = Join-Path $CaseFolder $reportFileName
 
     $htmlHeader = @"
 <!DOCTYPE html>
@@ -864,7 +356,7 @@ if ($anchor) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SOC Triage Report - $($anchor.RequestId)</title>
+    <title>SOC Triage Report [$Status] - $($anchor.RequestId)</title>
     <style>
         :root {
             --bg: #0d1117;
@@ -949,7 +441,7 @@ if ($anchor) {
     <div class="container">
         <div class="header">
             <div>
-                <h1 style="margin:0; font-size: 24px;">Risky User Analysis</h1>
+                <h1 style="margin:0; font-size: 24px;">Risky User Analysis [$Status]</h1>
                 <div style="color:var(--text-secondary); font-size: 13px; margin-top: 4px;">Request ID: <span class="value" style="color:var(--blue)">$($anchor.RequestId)</span></div>
             </div>
             <div class="badge $($statusBadgeClass)">$($anchor.Status)</div>
@@ -1024,6 +516,8 @@ if ($anchor) {
         </div>
 
         <div class="section-title">STATISTICAL BASELINE (SIDE-BY-SIDE)</div>
+        $(if ($Status -eq "FINAL") {
+            @"
         <table class="comparison-table">
             <thead>
                 <tr>
@@ -1078,7 +572,13 @@ if ($anchor) {
                 </tr>
             </tbody>
         </table>
+"@
+        } else {
+            "<div class='card' style='text-align:center; padding: 40px; color: var(--orange); font-weight: bold;'>PLEASE WAIT: Loading statistical baselines and device matrix... (Refresh in 10s)</div>"
+        })
 
+        $(if ($Status -eq "FINAL") {
+            @"
         <div class="section-title">DEVICE CORRELATION MATRIX (ALL SEEN DEVICES)</div>
         <table class="comparison-table">
             <thead>
@@ -1097,13 +597,15 @@ if ($anchor) {
                 </tr>
             </thead>
             <tbody>
-                $($matrixRows -join "`n")
+                $($MatrixRows -join "`n")
             </tbody>
         </table>
+"@
+        })
 
         <div class="section-title">INVESTIGATION STORY</div>
         <div class="story-box">
-            $(Build-TicketStory -Anchor $anchor -DecisionBucket $decision -IsNewIP $isNewIP -IsNewLocation $isNewLoc -IsNewApp $isNewApp)
+            $(Build-TicketStory -Anchor $anchor -DecisionBucket $decision -IsNewIP $isNewIP -IsNewLocation $isNewLocation -IsNewApp $isNewApp)
         </div>
 
         <div class="section-title">SOC TOOLBOX (ONE-CLICK PIVOT)</div>
@@ -1127,9 +629,7 @@ if ($anchor) {
                 <div class="links" style="margin-top:10px;">
                     <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Process Storyline for: $($AnchorDevice.DeviceId)</div>
                     $(
-                        # New Advanced Search URL Schema with high-value SOC table query
-                        $cqlQuery = [uri]::EscapeDataString("ComputerName='$($AnchorDevice.DeviceId)' | table @timestamp, ComputerName, UserName, event_simpleName, ImageFileName, CommandLine, LocalAddressIP, RemoteAddressIP")
-                        $csBase = "https://falcon.us-2.crowdstrike.com/investigate/search?repo=all&query=$cqlQuery"
+                        $csBase = "https://falcon.us-2.crowdstrike.com/investigate/search?repo=all&query=" + [uri]::EscapeDataString("ComputerName='$($AnchorDevice.DeviceId)' | table @timestamp, ComputerName, UserName, event_simpleName, ImageFileName, CommandLine, LocalAddressIP, RemoteAddressIP")
                         Get-ScopeButtons -BaseUrl $csBase -ToolType "CS" -TimeObj $utcTime
                     )
                     <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:8px;">
@@ -1140,13 +640,13 @@ if ($anchor) {
             <div class="card">
                 <span class="label">Proofpoint (Mail History)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$ppUser&since=$ppSince&until=$ppUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">User Email (3D Lookback)</a>
+                    <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$PpUser&since=$PpSince&until=$PpUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">User Email (3D Lookback)</a>
                 </div>
             </div>
             <div class="card">
                 <span class="label">Proofpoint (TRAP Incidents)</span>
                 <div class="links" style="margin-top:10px;">
-                    <a href="https://us.threatresponse.proofpoint.com/incidents?search=$ppUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Search TRAP Incidents</a>
+                    <a href="https://us.threatresponse.proofpoint.com/incidents?search=$PpUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">Search TRAP Incidents</a>
                 </div>
             </div>
             <div class="card">
@@ -1154,15 +654,14 @@ if ($anchor) {
                 <div class="links" style="margin-top:10px;">
                     <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Target User: <span style="color:var(--green)">$truncatedUser</span> <span class="copy-icon" onclick="copy('$truncatedUser')">COPY</span></div>
                     <a href="$lsUserUrl" target="_blank" style="background:var(--green); color:white; border:none; padding:8px 15px; border-radius:4px; font-weight:bold; display:inline-block; text-decoration:none;">View User in Lansweeper</a>
-                    <div style="font-size:10px; color:var(--text-secondary); margin-top:8px;">Truncated from: $($anchor.Username)</div>
                 </div>
             </div>
             <div class="card span-2">
                 <span class="label">Rapid7 Audit Path (Azure Ingress)</span>
                 <div class="links" style="margin-top:10px;">
-                    <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Logs for IP: $($anchor.IPAddress)</div>
+                    <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Search logs for IP: $($anchor.IPAddress)</div>
                     $(
-                        $r7Base = "https://us.idr.insight.rapid7.com/op/$rapid7OrgId#/search?logs=$rapid7LogList&query=where($encodedIP)"
+                        $r7Base = "https://us.idr.insight.rapid7.com/op/$Rapid7OrgId#/search?logs=$Rapid7LogList&query=where($EncodedIP)"
                         Get-ScopeButtons -BaseUrl $r7Base -ToolType "R7" -TimeObj $utcTime
                     )
                 </div>
@@ -1186,6 +685,320 @@ if ($anchor) {
 
     $htmlHeader | Out-File -FilePath $reportPath -Encoding utf8
     Write-Host "`nHTML Report generated at: $reportPath"
+}
+
+# -------------------------
+# Main
+# -------------------------
+
+$designFlaws = @()
+
+if (-not (Test-Path $CaseFolder)) {
+    $designFlaws += "DF01 MissingFiles"
+}
+
+$foundFiles = Get-ChildItem -Path $CaseFolder -Filter "*.csv" -ErrorAction SilentlyContinue
+if ($null -eq $foundFiles -or $foundFiles.Count -eq 0) {
+    if ("DF01 MissingFiles" -notin $designFlaws) { $designFlaws += "DF01 MissingFiles" }
+}
+
+$data = @{}
+$presence = @{
+    "Interactive"    = $false
+    "NonInteractive" = $false
+    "AuthDetails"    = $false
+    "AppSignIns"     = $false
+    "MSISignIns"     = $false
+}
+
+# --- DIAGNOSTICS ---
+Write-Host "`n=== DIAGNOSTICS ==="
+
+if ($foundFiles.Count -eq 0) {
+    Write-Host "No CSV files found in $CaseFolder"
+} else {
+    foreach ($file in $foundFiles) {
+        try {
+            # DF14 DuplicateHeaders Check (Before Import-Csv)
+            $rawHeaders = Get-Content $file.FullName -TotalCount 1
+            if ($rawHeaders -match ",,") {
+                $designFlaws += "DF14 DuplicateHeaders ($($file.Name): Blank header detected)"
+            }
+            $headerList = ($rawHeaders -split ",").Trim()
+            $duplicates = $headerList | Group-Object | Where-Object { $_.Count -gt 1 }
+            if ($duplicates) {
+                $designFlaws += "DF14 DuplicateHeaders ($($file.Name): $($duplicates.Name -join ', '))"
+            }
+
+            # DF18 ExportTypeMismatch
+            $isInteractiveName = $file.Name -match "^InteractiveSignIns" -and $file.Name -notmatch "AuthDetails"
+            $isNonInteractiveName = $file.Name -match "^NonInteractive"
+            $hasDate = $headerList -contains "Date"
+            $hasDateUtc = $headerList -contains "Date (UTC)"
+
+            if ($isInteractiveName -and $hasDateUtc -and -not $hasDate) {
+                $designFlaws += "DF18 ExportTypeMismatch ($($file.Name): Found Date (UTC) in Interactive file)"
+            }
+            if ($isNonInteractiveName -and $hasDate -and -not $hasDateUtc) {
+                $designFlaws += "DF18 ExportTypeMismatch ($($file.Name): Found Date in Non-Interactive file)"
+            }
+
+            # Robust Import-Csv handling duplicate headers
+            $raw = try { 
+                Import-Csv $file.FullName -ErrorAction Stop 
+            } catch {
+                $rawContent = Get-Content $file.FullName
+                $hRow = ($rawContent[0] -split ",").Trim()
+                $seen = @{}; $sanitizedHeaders = foreach ($h in $hRow) {
+                    $name = if ([string]::IsNullOrWhiteSpace($h)) { "BlankHeader" } else { $h }
+                    if ($seen.ContainsKey($name)) { $seen[$name]++; "$name`_$($seen[$name])" } else { $seen[$name] = 1; $name }
+                }
+                $rawContent | Select-Object -Skip 1 | ConvertFrom-Csv -Header $sanitizedHeaders
+            }
+            
+            # Fix dataset detection
+            $isAuth = $file.Name -match "AuthDetails"
+            if ($file.Name -match "InteractiveSignIns" -and -not $isAuth) {
+                Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
+            }
+            elseif ($file.Name -match "NonInteractive" -and -not $isAuth) {
+                Test-Columns -RawData $raw -DatasetName $file.Name -RequiredCols @("Date (UTC)", "Request ID", "User", "Username", "IP address", "Location", "Application", "Status")
+            }
+
+            # DF04 Date Parse Tracking + Normalization (Single Pass)
+            $dateCol = if ($file.Name -match "NonInteractive") { "Date (UTC)" } else { "Date" }
+            $failCount = 0; $samples = @()
+            $normalized = New-Object System.Collections.Generic.List[pscustomobject]
+            
+            foreach ($r in $raw) {
+                $dtValue = Get-Value -Row $r -ColumnName $dateCol
+                $dt = Parse-EventTime $dtValue
+                
+                if ($null -eq $dt -and -not [string]::IsNullOrWhiteSpace($dtValue)) {
+                    $failCount++
+                    if ($samples.Count -lt 3) { $samples += $dtValue }
+                }
+                
+                # Add normalized properties directly to the CSV object
+                $r | Add-Member -MemberType NoteProperty -Name "EventTime" -Value $dt -Force
+                $r | Add-Member -MemberType NoteProperty -Name "RequestId" -Value (Get-Value -Row $r -ColumnName "Request ID") -Force
+                $r | Add-Member -MemberType NoteProperty -Name "IPAddress" -Value (Get-Value -Row $r -ColumnName "IP address") -Force
+                $r | Add-Member -MemberType NoteProperty -Name "MfaResult" -Value "N/A" -Force
+                $r | Add-Member -MemberType NoteProperty -Name "ConditionalAccess" -Value (Get-FieldValue -Row $r -Aliases @("Conditional Access")) -Force
+                
+                $normalized.Add($r)
+            }
+
+            if ($raw.Count -gt 0 -and ($failCount / $raw.Count) -gt 0.3) {
+                $designFlaws += "DF04 DateParseFailure ($($file.Name))"
+                Write-Host "ERROR: Dataset '$($file.Name)' date parse failure rate: $([math]::Round(($failCount/$raw.Count)*100))%. Samples: $($samples -join ', ')"
+            }
+
+            if ($null -eq $raw -or $raw.Count -eq 0) {
+                $designFlaws += "DF02 EmptyDataset ($($file.Name))"
+            }
+            if ($raw.Count -gt 50000) {
+                $designFlaws += "DF13 TooManyEventsTruncated ($($file.Name): $($raw.Count) rows)"
+            }
+
+            # DF15 MixedTenantNoise
+            $tenantIds = $raw | ForEach-Object { Get-Value -Row $_ -ColumnName "Home tenant ID" } | Where-Object { $_ }
+            if ($tenantIds) {
+                $tenantGroups = $tenantIds | Group-Object
+                if ($tenantGroups.Count -gt 1) {
+                    $topTenants = $tenantGroups | Sort-Object Count -Descending | Select-Object -First 5 | ForEach-Object { "$($_.Name) ($($_.Count))" }
+                    $designFlaws += "DF15 MixedTenantNoise ($($file.Name): $($topTenants -join ', '))"
+                }
+            }
+
+            # Store normalized data for datasets
+            $data[$file.Name] = $normalized
+            Write-Host "Loaded: $($file.Name) ($($raw.Count) rows)"
+            
+            if ($file.Name -match "AuthDetails") { $presence["AuthDetails"] = $true }
+            elseif ($file.Name -match "NonInteractive") { $presence["NonInteractive"] = $true }
+            elseif ($file.Name -match "InteractiveSignIns") { 
+                $presence["Interactive"] = $true
+                # DF06 Join Rate Check
+                $authKey = $file.Name.Replace("InteractiveSignIns", "InteractiveSignIns_AuthDetails")
+                if (Test-Path (Join-Path $CaseFolder $authKey)) {
+                    $authRaw = Import-Csv (Join-Path $CaseFolder $authKey)
+                    $ids = $raw | ForEach-Object { Get-Value -Row $_ -ColumnName "Request ID" } | Where-Object { $_ } | Select-Object -Unique
+                    $authIds = $authRaw | ForEach-Object { Get-Value -Row $_ -ColumnName "Request ID" } | Where-Object { $_ } | Select-Object -Unique
+                    $matches = $ids | Where-Object { $_ -in $authIds }
+                    $rate = if ($ids.Count -gt 0) { ($matches.Count / $ids.Count) * 100 } else { 100 }
+                    if ($ids.Count -gt 0 -and $rate -lt 20) {
+                        $designFlaws += "DF06 JoinRateLow ($($file.Name): $([math]::Round($rate))%)"
+                    }
+                }
+            }
+            elseif ($file.Name -match "AppSignIns") { $presence["AppSignIns"] = $true }
+            elseif ($file.Name -match "MSISignIns") { $presence["MSISignIns"] = $true }
+        } catch {
+            Write-Warning "Failed to load $($file.Name): $($_.Exception.Message)"
+            $designFlaws += "DF04 DateParseFailure ($($file.Name))"
+        }
+    }
+}
+
+# DF19/20 Case Types
+$hasInt = $presence["Interactive"]
+$hasNi = $presence["NonInteractive"]
+if (-not $hasInt -and $hasNi) { $designFlaws += "DF19 NonInteractiveOnlyCase"; Write-Host "Case appears to be Non-Interactive only." }
+if ($hasInt -and -not $hasNi) { $designFlaws += "DF20 InteractiveOnlyCase"; Write-Host "Case appears to be Interactive only." }
+
+Write-Host "`nDataset Types Present:"
+foreach ($type in $presence.Keys | Sort-Object) {
+    $status = if ($presence[$type]) { "[PRESENT]" } else { "[MISSING]" }
+    Write-Host "  $type`: $status"
+}
+
+# --- ANCHOR ---
+Write-Host "`n=== ANCHOR ==="
+$anchor = $null
+
+if ([string]::IsNullOrWhiteSpace($AnchorRequestId)) {
+    Write-Host "No -AnchorRequestId provided. Skipping anchor selection."
+} else {
+    $searchOrder = $data.Keys | Sort-Object { if ($_ -match "InteractiveSignIns" -and $_ -notmatch "AuthDetails") { 0 } else { 1 } }
+    foreach ($key in $searchOrder) {
+        if ($key -match "AuthDetails") { continue }
+        $match = $data[$key] | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
+        if ($match) {
+            $anchor = $match
+            Write-Host "Found anchor in: $key"
+            
+            # Link AuthDetails if Interactive
+            if ($key -match "InteractiveSignIns") {
+                $authKey = $key.Replace("InteractiveSignIns", "InteractiveSignIns_AuthDetails")
+                if ($data.ContainsKey($authKey)) {
+                    $authMatch = $data[$authKey] | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
+                    if ($authMatch) { $anchor.MfaResult = $authMatch.Status }
+                }
+            }
+            break
+        }
+    }
+}
+
+if ($anchor) {
+    $anchor | Format-List EventTime, Username, IPAddress, Location, Application, Status, ConditionalAccess, MfaResult, RequestId
+    
+    # --- ANCHOR_DEVICE ---
+    Write-Host "`n=== ANCHOR_DEVICE ==="
+    $AnchorDevice = [pscustomobject]@{
+        DeviceId        = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["DeviceId"]
+        OperatingSystem = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["OperatingSystem"]
+        Browser         = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["Browser"]
+        ClientApp       = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["ClientApp"]
+        JoinType        = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["JoinType"]
+        Compliant       = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["Compliant"]
+        Managed         = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["Managed"]
+        UserAgent       = Get-FieldValue -Row $anchor -Aliases $ColumnAliases["UserAgent"]
+    }
+    $AnchorDevice | Format-List
+    
+    # Timezone Conversions
+    $utcTime = if ($anchor.EventTime -is [datetime]) { [datetime]::SpecifyKind($anchor.EventTime, [System.DateTimeKind]::Utc) } else { [datetime]::UtcNow }
+    $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
+    $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
+
+    # Tool URL prep
+    $startTime = $utcTime.AddHours(-12); $endTime = $utcTime.AddHours(12)
+    $fromMs = [long]([datetimeoffset]::new($startTime).ToUnixTimeMilliseconds())
+    $toMs = [long]([datetimeoffset]::new($endTime).ToUnixTimeMilliseconds())
+    $fromSec = [datetimeoffset]::new($startTime).ToUnixTimeSeconds()
+    $toSec = [datetimeoffset]::new($endTime).ToUnixTimeSeconds()
+    $ppSince = $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $ppUntil = $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $ppUser = [uri]::EscapeDataString($anchor.Username)
+    $encodedIP = [uri]::EscapeDataString($anchor.IPAddress)
+    
+    # Lansweeper User Pivot Logic
+    $truncatedUser = "Unknown"
+    if ($anchor.Username -and $anchor.Username -match "@") { $truncatedUser = $anchor.Username.Split('@')[0] }
+    elseif ($anchor.Username) { $truncatedUser = $anchor.Username }
+    $lsUserUrl = "https://mxpcorls01:82/user.aspx?username=$truncatedUser&userdomain=MAXOR"
+
+    $ipVal = $anchor.IPAddress; $prefixInfo = ""; $prefix64 = "N/A"
+    if ($ipVal -match ':') {
+        $segments = $ipVal.Split(':'); if ($segments.Count -ge 4) {
+            $prefix64 = ($segments[0..3] -join ':') + "::/64"
+            $prefixInfo = "<div style='font-size:11px; color:var(--orange); margin-top:4px;'>Network Prefix: <span class='value'>$prefix64</span></div>"
+        }
+    }
+
+    # Initial Progressive Report
+    $rapid7OrgId = "682B861F32ACBF7D3060"
+    $rapid7LogList = "%5B%222186bedc4-1ee4-4728-a970-43575fb22d9d%22%5D"
+    $uniqueFlaws = @($designFlaws) | Select-Object -Unique
+    
+    Write-Host "Generating Initial Pivot Report..."
+    Write-Report -Status "INITIAL (Processing Baselines...)" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision "PENDING" -RiskScore 0 -UniqueFlaws $uniqueFlaws -IsNewIP $false -IsNewLocation $false -IsNewApp $false -MatrixRows @() -Set24h @() -Set7d @() -Set30d @() -CaseFolder $CaseFolder -ColumnAliases $ColumnAliases -Rapid7OrgId $rapid7OrgId -Rapid7LogList $rapid7LogList -EncodedIP $encodedIP -PpUser $ppUser -PpSince $ppSince -PpUntil $ppUntil -FromSec $fromSec -ToSec $toSec -FromMs $fromMs -ToMs $toMs -PrefixInfo $prefixInfo -lsUserUrl $lsUserUrl
+
+    # Heavy Math
+    # --- NOVELTY ---
+    Write-Host "`n=== NOVELTY ==="
+    $data30d = $data.Values | ForEach-Object { $_ } | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }
+    $isNewIP = Test-IsNewValue -BaselineEvents $data30d -PropertyName "IPAddress" -Value $anchor.IPAddress
+    $isNewDevice = Test-IsNewValue -BaselineEvents $data30d -PropertyName "DeviceId" -Value $AnchorDevice.DeviceId
+    Write-Host "New IP: $isNewIP"; Write-Host "New Device: $isNewDevice"
+
+    # --- DEVICE MATRIX ---
+    $allEvents = $data.Values | ForEach-Object { $_ }
+    $deviceGroups = $allEvents | Group-Object { 
+        $d = Get-FieldValue -Row $_ -Aliases $ColumnAliases["DeviceId"]
+        if ($d -eq "Unknown") {
+            $ua = Get-FieldValue -Row $_ -Aliases $ColumnAliases["UserAgent"]
+            if ($ua -ne "Unknown") { "Unknown ($($ua.Substring(0,[math]::Min(30, $ua.Length))))" } else { "Unknown Device" }
+        } else { $d }
+    }
+    $matrixRows = foreach ($g in $deviceGroups) {
+        $devId = $g.Name; $groupEvents = $g.Group
+        $ips = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases @("IP address") } | Select-Object -Unique
+        $locs = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases @("Location") } | Select-Object -Unique
+        $apps = $groupEvents | Group-Object { Get-FieldValue -Row $_ -Aliases @("Application") } | Sort-Object Count -Descending | Select-Object -First 3 | ForEach-Object { $_.Name }
+        $osBrowser = $groupEvents | ForEach-Object { $o = Get-FieldValue -Row $_ -Aliases $ColumnAliases["OperatingSystem"]; $b = Get-FieldValue -Row $_ -Aliases $ColumnAliases["Browser"]; "$o / $b" } | Select-Object -Unique
+        $compliances = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["Compliant"] } | Select-Object -Unique
+        $joins = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["JoinType"] } | Select-Object -Unique
+        $isAppOnly = $groupEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["ClientApp"] } | Where-Object { $_ -match "App|Service" } | Select-Object -First 1
+        $lastSeenTime = ($groupEvents | Sort-Object EventTime -Descending | Select-Object -First 1).EventTime
+        $lastSeenStr = if ($lastSeenTime) { $lastSeenTime.ToString("yyyy-MM-dd HH:mm") } else { "Unknown" }
+        $c24 = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }).Count
+        $c7  = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }).Count
+        $c30 = ($groupEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }).Count
+        $totalFreq = $groupEvents.Count
+        $rowClass = if ($devId -eq $AnchorDevice.DeviceId -or $devId -match [regex]::Escape($AnchorDevice.DeviceId)) { "class='anchor-row-highlight'" } else { "" }
+        @"
+        <tr $rowClass>
+            <td class="val-col" style="font-size:11px;">$devId</td>
+            <td style="font-size:11px;">$($ips -join ", ")</td>
+            <td style="font-size:11px;">$($locs -join ", ")</td>
+            <td style="font-size:10px; color:var(--blue)">$($osBrowser -join "<br>")</td>
+            <td style="font-size:10px;">
+                <div style="color:$(if($compliances -contains 'True'){'var(--green)'}else{'var(--text-secondary)'})">Compliant: $($compliances -join '/')</div>
+                <div style="color:var(--blue)">Join: $($joins -join '/')</div>
+                $(if($isAppOnly){"<div style='color:var(--orange)'>TYPE: Application</div>"}else{"<div style='color:var(--text-secondary)'>TYPE: User</div>"})
+            </td>
+            <td style="color:var(--text-secondary); font-size:10px;">$($apps -join ", ")</td>
+            <td style="font-size:11px; white-space:nowrap;">$lastSeenStr</td>
+            <td class="freq-cell" style="color:var(--text-primary)">$totalFreq</td>
+            <td class="freq-cell $(if($c24 -eq 0){'zero'})">$c24</td>
+            <td class="freq-cell $(if($c7 -eq 0){'zero'})">$c7</td>
+            <td class="freq-cell $(if($c30 -eq 0){'zero'})">$c30</td>
+        </tr>
+"@
+    }
+
+    # Final Decision
+    $riskScore = Get-RiskScore -Anchor $anchor -IsNewIP $isNewIP -IsNewDevice $isNewDevice -AnchorDevice $AnchorDevice
+    $decision = Get-DecisionBucket -Anchor $anchor -Score $riskScore
+    
+    Write-Host "`nUpdating Report with full analysis..."
+    $set24h = $data.Keys | Where-Object { $_ -match "24h" } | ForEach-Object { $data[$_] }
+    $set7d  = $data.Keys | Where-Object { $_ -match "7d" } | ForEach-Object { $data[$_] }
+    $set30d = $data.Keys | Where-Object { $_ -match "30d" } | ForEach-Object { $data[$_] }
+    Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $decision -RiskScore $riskScore -UniqueFlaws $uniqueFlaws -IsNewIP $isNewIP -IsNewLocation $isNewLoc -IsNewApp $isNewApp -MatrixRows $matrixRows -Set24h $set24h -Set7d $set7d -Set30d $set30d -CaseFolder $CaseFolder -ColumnAliases $ColumnAliases -Rapid7OrgId $rapid7OrgId -Rapid7LogList $rapid7LogList -EncodedIP $encodedIP -PpUser $ppUser -PpSince $ppSince -PpUntil $ppUntil -FromSec $fromSec -ToSec $toSec -FromMs $fromMs -ToMs $toMs -PrefixInfo $prefixInfo -lsUserUrl $lsUserUrl
 }
 
 Write-Host "`nDONE"
