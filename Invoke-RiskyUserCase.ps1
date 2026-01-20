@@ -56,7 +56,7 @@ function Get-Value {
     )
     if ($null -eq $Row) { return $null }
     
-    # Ultra-robust aliases for Entra headers
+    # Ultra-robust aliases for Entra headers (User Name vs Username vs Date UTC)
     $aliases = @(
         $ColumnName, 
         ($ColumnName -replace ' ', ''), 
@@ -285,9 +285,10 @@ function Write-Report {
 }
 
 # --- MAIN ---
+$designFlaws = @()
+$files = Get-ChildItem $CaseFolder -Filter "*.csv"
 $data = @{}
 $presence = @{}
-$files = Get-ChildItem $CaseFolder -Filter "*.csv"
 
 foreach ($f in $files) {
     try {
@@ -368,7 +369,7 @@ if($anchor){
     $deviceGroups = ($data.Values | ForEach-Object{$_}) | Group-Object { Get-FieldValue -Row $_ -Aliases $ColumnAliases["DeviceId"] }
     $matrix = foreach($g in $deviceGroups){
         $dId = $g.Name; $evs = $g.Group
-        $ips = $evs.IPAddress | Select-Object -Unique
+        $ips = $evs.IPAddress | Select-Object -Unique; $apps = $evs.Application | Select-Object -Unique
         $c24 = ($evs | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }).Count
         $c7 = ($evs | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }).Count
         $c30 = ($evs | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }).Count
