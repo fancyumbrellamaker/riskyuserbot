@@ -29,7 +29,7 @@ $LS_URL        = if ($env:LANSWEEPER_URL) { $env:LANSWEEPER_URL } else { "https:
 $LS_DOMAIN     = if ($env:LANSWEEPER_DOMAIN) { $env:LANSWEEPER_DOMAIN } else { "MAXOR" }
 $CS_BASE       = if ($env:CROWDSTRIKE_BASE_URL) { $env:CROWDSTRIKE_BASE_URL } else { "https://falcon.us-2.crowdstrike.com" }
 
-# Column Aliases for Device + UA + Geo
+# Column Aliases
 $script:ColumnAliases = @{
     "DeviceId"        = @("Device ID", "DeviceId")
     "OperatingSystem" = @("Operating System", "OS", "OperatingSystem")
@@ -45,20 +45,9 @@ $script:ColumnAliases = @{
 }
 
 function Get-FieldValue {
-    param(
-        [Parameter(Mandatory=$false)] $Row,
-        [Parameter(Mandatory=$true)] [string[]] $Aliases,
-        $Default = "Unknown"
-    )
+    param($Row, [string[]]$Aliases, $Default = "Unknown")
     if ($null -eq $Row) { return $Default }
-    
-    $props = @()
-    if ($Row.PSObject -and $Row.PSObject.Properties) {
-        $props = $Row.PSObject.Properties.Name
-    } elseif ($Row -is [System.Collections.IDictionary]) {
-        $props = $Row.Keys
-    }
-
+    $props = if ($Row.PSObject) { $Row.PSObject.Properties.Name } else { $Row.Keys }
     foreach ($alias in $Aliases) {
         $normAlias = ($alias -replace '[^a-zA-Z0-9]', '').ToLower()
         foreach ($p in $props) {
@@ -75,26 +64,13 @@ function Get-FieldValue {
 }
 
 function Get-Value {
-    param(
-        [Parameter(Mandatory=$true)] $Row,
-        [Parameter(Mandatory=$true)] [string] $ColumnName
-    )
-    if ($null -eq $Row) { return $null }
-    
-    $aliases = @(
-        $ColumnName, 
-        ($ColumnName -replace ' ', ''), 
-        ($ColumnName + " (UTC)"), 
-        ($ColumnName -replace ' ', '_'),
-        "User", 
-        "User name",
-        "Username"
-    )
+    param($Row, $ColumnName)
+    $aliases = @($ColumnName, ($ColumnName -replace ' ', ''), ($ColumnName + " (UTC)"), ($ColumnName -replace ' ', '_'), "User")
     return Get-FieldValue -Row $Row -Aliases $aliases -Default $null
 }
 
 function Parse-EventTime {
-    param([string] $Value)
+    param($Value)
     if ([string]::IsNullOrWhiteSpace($Value)) { return $null }
     try { 
         $dt = [datetime]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AdjustToUniversal)
@@ -103,36 +79,25 @@ function Parse-EventTime {
 }
 
 function Get-Frequency {
-    param([string]$Value, [string[]]$Aliases, $Datasets)
-    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -eq "Unknown") { return 0 }
-    $total = 0
-    foreach ($set in $Datasets) {
-        if ($null -ne $set) {
-            $total += ($set | Where-Object { 
-                $v = Get-FieldValue -Row $_ -Aliases $Aliases
-                $v -ieq $Value 
-            }).Count
-        }
-    }
-    return $total
+    param($Value, $Aliases, $Events)
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -eq "Unknown" -or $null -eq $Events) { return 0 }
+    return ($Events | Where-Object { (Get-FieldValue -Row $_ -Aliases $Aliases) -ieq $Value }).Count
 }
 
 function Get-LastSeen {
-    param([string]$Value, [string[]]$Aliases, $Datasets)
-    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -eq "Unknown") { return "N/A" }
-    $latest = $null
-    foreach ($set in $Datasets) {
-        if ($null -ne $set) {
-            $match = $set | Where-Object { 
-                $v = Get-FieldValue -Row $_ -Aliases $Aliases
-                $v -ieq $Value 
-            } | Sort-Object EventTime -Descending | Select-Object -First 1
-            if ($match -and $match.EventTime -and ($null -eq $latest -or $match.EventTime -gt $latest)) {
-                $latest = $match.EventTime
-            }
-        }
-    }
-    if ($latest) { return $latest.ToString("yyyy-MM-dd HH:mm") } else { return "Never" }
+    param($Value, $Aliases, $Events)
+    if ([string]::IsNullOrWhiteSpace($Value) -or $Value -eq "Unknown" -or $null -eq $Events) { return "N/A" }
+    $match = $Events | Where-Object { (Get-FieldValue -Row $_ -Aliases $Aliases) -ieq $Value } | Sort-Object EventTime -Descending | Select-Object -First 1
+    if ($match -and $match.EventTime) { return $match.EventTime.ToString("yyyy-MM-dd HH:mm") }
+    return "Never"
+}
+
+function Test-IsNewValue {
+    param($BaselineEvents, $PropertyName, $Aliases, $Value)
+    if ($null -eq $Value -or $Value -eq "Unknown") { return $false }
+    if ($null -eq $BaselineEvents -or $BaselineEvents.Count -eq 0) { return $true }
+    $existing = $BaselineEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $Aliases } | Select-Object -Unique
+    return -not ($existing -contains $Value)
 }
 
 function Get-RiskScore {
@@ -185,8 +150,8 @@ function Get-ScopeButtons {
     )
     $start1m = ([datetimeoffset]::new($TimeObj.AddSeconds(-30))).ToUnixTimeMilliseconds()
     $end1m   = ([datetimeoffset]::new($TimeObj.AddSeconds(30))).ToUnixTimeMilliseconds()
-    $primaryUrl = if ($ToolType -eq "CS") { $BaseUrl + "&start=$start1m&end=$end1m" } else { $BaseUrl + "&from=$start1m&to=$end1m" }
-    $html = "<a href='$primaryUrl' target='_blank' class='primary-pivot-btn' id='primary-$($ToolType.ToLower())-pivot' data-time-params='$(if($ToolType -eq "CS"){"&start=$start1m&end=$end1m"}else{"&from=$start1m&to=$end1m"})'>PIVOT TO EXACT MINUTE</a>"
+    $pUrl = if ($ToolType -eq "CS") { $BaseUrl + "&start=$start1m&end=$end1m" } else { $BaseUrl + "&from=$start1m&to=$end1m" }
+    $html = "<a href='$pUrl' target='_blank' class='primary-pivot-btn' id='primary-$($ToolType.ToLower())-pivot' data-time-params='$(if($ToolType -eq "CS"){"&start=$start1m&end=$end1m"}else{"&from=$start1m&to=$end1m"})'>PIVOT TO EXACT MINUTE</a>"
     $html += "<div class='scope-group'>"
     foreach ($s in $scopes) {
         $st = ([datetimeoffset]::new($TimeObj.AddSeconds(-$s.Offset))).ToUnixTimeMilliseconds()
@@ -198,41 +163,10 @@ function Get-ScopeButtons {
 }
 
 function Write-Report {
-    param(
-        [Parameter(Mandatory=$true)] $Status, 
-        [Parameter(Mandatory=$true)] $Anchor, 
-        [Parameter(Mandatory=$true)] $AnchorDevice, 
-        [Parameter(Mandatory=$true)] $UtcTime, 
-        [Parameter(Mandatory=$true)] $EstTime, 
-        [Parameter(Mandatory=$true)] $CstTime, 
-        [Parameter(Mandatory=$true)] $Decision, 
-        [Parameter(Mandatory=$true)] $RiskScore, 
-        [Parameter(Mandatory=$true)] $UniqueFlaws, 
-        [Parameter(Mandatory=$true)] $IsNewIP, 
-        [Parameter(Mandatory=$true)] $IsNewLocation, 
-        [Parameter(Mandatory=$true)] $IsNewApp, 
-        [Parameter(Mandatory=$true)] $MatrixRows, 
-        [Parameter(Mandatory=$true)] $Set24h, 
-        [Parameter(Mandatory=$true)] $Set7d, 
-        [Parameter(Mandatory=$true)] $Set30d, 
-        [Parameter(Mandatory=$true)] $CaseFolder, 
-        [Parameter(Mandatory=$true)] $Rapid7OrgId, 
-        [Parameter(Mandatory=$true)] $Rapid7LogList, 
-        [Parameter(Mandatory=$true)] $EncodedIP, 
-        [Parameter(Mandatory=$true)] $PpUser, 
-        [Parameter(Mandatory=$true)] $PpSince, 
-        [Parameter(Mandatory=$true)] $PpUntil, 
-        [Parameter(Mandatory=$true)] $lsUserUrl, 
-        [Parameter(Mandatory=$true)] $CsBaseUrl,
-        [Parameter(Mandatory=$true)] $ColumnAliases
-    )
+    param($Status, $Anchor, $AnchorDevice, $UtcTime, $EstTime, $CstTime, $Decision, $RiskScore, $UniqueFlaws, $IsNewIP, $IsNewLocation, $IsNewApp, $MatrixRows, $Set24h, $Set7d, $Set30d, $CaseFolder, $Rapid7OrgId, $Rapid7LogList, $EncodedIP, $PpUser, $PpSince, $PpUntil, $lsUserUrl, $CsBaseUrl)
     
     $statusBadgeClass = if($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
-    
-    # Filename logic
-    $tStamp = (Get-Date).ToString("yyyyMMdd_HHmmss_fff")
-    $safeU = $anchor.Username -replace '[^a-zA-Z0-9]', '_'
-    $reportFileName = "$($tStamp)_$($safeU)_RiskyUserAlert.html"
+    $reportFileName = "RiskyUser_TriageReport.html"
     $reportPath = Join-Path $CaseFolder $reportFileName
 
     $html = @"
@@ -321,7 +255,21 @@ function Write-Report {
                 $(Get-ScopeButtons -BaseUrl "https://us.idr.insight.rapid7.com/op/$Rapid7OrgId#/search?logs=$Rapid7LogList&query=where($EncodedIP)" -ToolType "R7" -TimeObj $UtcTime)
             </div>
         </div>
+        <div class="section-title">STATISTICAL BASELINE</div>
         $(if($Status -eq "FINAL"){
+            @"
+        <table class="comparison-table">
+            <thead><tr><th>Attribute</th><th>Value</th><th>Last Seen</th><th>24h</th><th>7d</th><th>30d</th></tr></thead>
+            <tbody>
+                <tr><td>Device ID</td><td>$($AnchorDevice.DeviceId)</td><td>$(Get-LastSeen $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set30d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set24h)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set7d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set30d)</td></tr>
+                <tr><td>IP Address</td><td>$($anchor.IPAddress)</td><td>$(Get-LastSeen $anchor.IPAddress @('IP address') $Set30d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $Set24h)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $Set7d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $Set30d)</td></tr>
+            </tbody>
+        </table>
+"@
+        }else{
+            "<div class='card' style='text-align:center; padding:40px; color:var(--orange); font-weight:bold;'>ANALYSIS IN PROGRESS... REFRESH IN 10S</div>"
+        })
+        $(if($Status -eq "FINAL" -and $MatrixRows){
             @"
         <div class="section-title">DEVICE CORRELATION MATRIX</div>
         <table class="comparison-table">
@@ -329,23 +277,21 @@ function Write-Report {
             <tbody>$($MatrixRows -join "")</tbody>
         </table>
 "@
-        }else{
-            "<div class='card' style='text-align:center; padding:40px; color:var(--orange); font-weight:bold;'>ANALYSIS IN PROGRESS... REFRESH IN 10S</div>"
         })
     </div>
 </body>
 </html>
 "@
     $html | Out-File $reportPath -Encoding utf8
-    Write-Host "HTML Report generated: $reportPath"
+    Write-Host "HTML Report updated: $reportPath"
 }
 
-# --- START EXECUTION ---
+# --- MAIN ---
 Write-Host "`n=== DIAGNOSTICS ==="
 $files = Get-ChildItem -Path $CaseFolder -Filter "*.csv"
-if ($files.Count -eq 0) { Write-Host "No CSV files found in $CaseFolder"; exit }
-
 $data = @{}
+$flatEvents = New-Object System.Collections.Generic.List[pscustomobject]
+
 foreach ($f in $files) {
     Write-Host "Loading: $($f.Name)..." -NoNewline
     try {
@@ -365,30 +311,17 @@ foreach ($f in $files) {
             $r | Add-Member -MemberType NoteProperty -Name "MfaResult" -Value "N/A" -Force
             $r | Add-Member -MemberType NoteProperty -Name "ConditionalAccess" -Value (Get-FieldValue -Row $r -Aliases @("Conditional Access")) -Force
             $norm.Add($r)
+            $flatEvents.Add($r)
         }
         $data[$f.Name] = $norm
-        Write-Host " OK ($($norm.Count) rows)"
-    } catch { Write-Host " FAILED: $($_.Exception.Message)" }
+        Write-Host " OK"
+    } catch { Write-Host " FAILED" }
 }
 
 # Anchor Selection
-Write-Host "`n=== ANCHOR SELECTION ==="
 $anchor = $null
 if($AnchorRequestId){
-    foreach($k in $data.Keys){
-        if($k -match "AuthDetails"){continue}
-        $m = $data[$k] | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
-        if($m){ 
-            $anchor = $m
-            Write-Host "Found anchor in $k"
-            $authK = $k.Replace("InteractiveSignIns", "InteractiveSignIns_AuthDetails")
-            if($data.ContainsKey($authK)){
-                $am = $data[$authK] | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
-                if($am){ $anchor.MfaResult = $am.Status; Write-Host "Linked AuthDetails." }
-            }
-            break 
-        }
-    }
+    $anchor = $flatEvents | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
 }
 
 if($anchor){
@@ -406,39 +339,35 @@ if($anchor){
     $utcTime = if($anchor.EventTime){$anchor.EventTime}else{[datetime]::UtcNow}
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
-    
     $encodedIP = [uri]::EscapeDataString($anchor.IPAddress)
     $trunc = "Unknown"; if($anchor.Username -and $anchor.Username -match "@"){$trunc = $anchor.Username.Split('@')[0]}elseif($anchor.Username){$trunc=$anchor.Username}
     $lsUrl = "$LS_URL/user.aspx?username=$trunc&userdomain=$LS_DOMAIN"
     
     # Phase 1: Progressive Report
-    Write-Host "Generating Initial Pivot Report..."
-    Write-Report -Status "INITIAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision "PENDING" -RiskScore 0 -UniqueFlaws @() -IsNewIP $false -IsNewLocation $false -IsNewApp $false -MatrixRows @() -Set24h @() -Set7d @() -Set30d @() -CaseFolder $CaseFolder -ColumnAliases $script:ColumnAliases -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE
+    Write-Host "`nGenerating Initial Pivot Report..."
+    Write-Report -Status "INITIAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision "PENDING" -RiskScore 0 -UniqueFlaws @() -IsNewIP $false -IsNewLocation $false -IsNewApp $false -MatrixRows @() -Set24h @() -Set7d @() -Set30d @() -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ColumnAliases $script:ColumnAliases
 
     # Phase 2: Heavy Math
     Write-Host "Processing Baseline Metrics..."
-    $data30d = $data.Values | ForEach-Object { $_ } | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }
-    $isNewIP = Test-IsNewValue -BaselineEvents $data30d -PropertyName "IPAddress" -Value $anchor.IPAddress
-    $isNewDevice = Test-IsNewValue -BaselineEvents $data30d -PropertyName "DeviceId" -Value $AnchorDevice.DeviceId
+    $set24h = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }
+    $set7d  = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }
+    $set30d = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }
     
-    $deviceGroups = ($data.Values | ForEach-Object{$_}) | Group-Object { Get-FieldValue -Row $_ -Aliases $script:ColumnAliases["DeviceId"] }
+    $isNewIP = Test-IsNewValue -BaselineEvents $set30d -Aliases @("IP address") -Value $anchor.IPAddress
+    $isNewDevice = Test-IsNewValue -BaselineEvents $set30d -Aliases $script:ColumnAliases["DeviceId"] -Value $AnchorDevice.DeviceId
+    
+    $deviceGroups = $set30d | Group-Object { Get-FieldValue -Row $_ -Aliases $script:ColumnAliases["DeviceId"] }
     $matrix = foreach($g in $deviceGroups){
         $dId = $g.Name; $evs = $g.Group
-        $ips = $evs.IPAddress | Select-Object -Unique; 
-        $c24 = ($evs | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }).Count
-        $c7 = ($evs | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }).Count
-        $c30 = ($evs | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }).Count
+        $ips = $evs.IPAddress | Select-Object -Unique
         $rowStyle = if($dId -eq $AnchorDevice.DeviceId){"class='anchor-row-highlight'"}else{""}
-        "<tr $rowStyle><td>$dId</td><td>$($ips -join ',')</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['OperatingSystem'])</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Compliant'])</td><td>$c24</td><td>$c7</td><td>$c30</td></tr>"
+        "<tr $rowStyle><td>$dId</td><td>$($ips -join ',')</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['OperatingSystem'])</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Compliant'])</td><td>$($evs.Count)</td><td>-</td><td>-</td></tr>"
     }
     
     $risk = Get-RiskScore -Anchor $anchor -IsNewIP $isNewIP -IsNewDevice $isNewDevice -AnchorDevice $AnchorDevice
     $finalDecision = Get-DecisionBucket -Anchor $anchor -Score $risk
     
-    # Phase 3: Final Update
-    Write-Host "Finalizing Report..."
-    Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $finalDecision -RiskScore $risk -UniqueFlaws @() -IsNewIP $isNewIP -IsNewLocation $false -IsNewApp $false -MatrixRows $matrix -Set24h @() -Set7d @() -Set30d @() -CaseFolder $CaseFolder -ColumnAliases $script:ColumnAliases -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE
-} else { Write-Host "No anchor found for Request ID: $AnchorRequestId" }
-
+    Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $finalDecision -RiskScore $risk -UniqueFlaws @() -IsNewIP $isNewIP -IsNewLocation $false -IsNewApp $false -MatrixRows $matrix -Set24h $set24h -Set7d $set7d -Set30d $set30d -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ColumnAliases $script:ColumnAliases
+}
 Write-Host "`nDONE"
 Write-Host "REGRESSION_CHECK: OK"
