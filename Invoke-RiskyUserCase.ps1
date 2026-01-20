@@ -93,7 +93,7 @@ function Get-LastSeen {
 }
 
 function Test-IsNewValue {
-    param($BaselineEvents, $PropertyName, $Aliases, $Value)
+    param($BaselineEvents, $Aliases, $Value)
     if ($null -eq $Value -or $Value -eq "Unknown") { return $false }
     if ($null -eq $BaselineEvents -or $BaselineEvents.Count -eq 0) { return $true }
     $existing = $BaselineEvents | ForEach-Object { Get-FieldValue -Row $_ -Aliases $Aliases } | Select-Object -Unique
@@ -163,11 +163,10 @@ function Get-ScopeButtons {
 }
 
 function Write-Report {
-    param($Status, $Anchor, $AnchorDevice, $UtcTime, $EstTime, $CstTime, $Decision, $RiskScore, $UniqueFlaws, $IsNewIP, $IsNewLocation, $IsNewApp, $MatrixRows, $Set24h, $Set7d, $Set30d, $CaseFolder, $Rapid7OrgId, $Rapid7LogList, $EncodedIP, $PpUser, $PpSince, $PpUntil, $lsUserUrl, $CsBaseUrl)
+    param($Status, $Anchor, $AnchorDevice, $UtcTime, $EstTime, $CstTime, $Decision, $RiskScore, $UniqueFlaws, $IsNewIP, $IsNewLocation, $IsNewApp, $MatrixRows, $Set24h, $Set7d, $Set30d, $CaseFolder, $Rapid7OrgId, $Rapid7LogList, $EncodedIP, $PpUser, $PpSince, $PpUntil, $lsUserUrl, $CsBaseUrl, $ReportFileName)
     
     $statusBadgeClass = if($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
-    $reportFileName = "RiskyUser_TriageReport.html"
-    $reportPath = Join-Path $CaseFolder $reportFileName
+    $reportPath = Join-Path $CaseFolder $ReportFileName
 
     $html = @"
 <!DOCTYPE html>
@@ -202,14 +201,12 @@ function Write-Report {
         function copy(text) { navigator.clipboard.writeText(text); alert('Copied: ' + text); }
         function updateDynamicPivots(n) {
             if(!n) return;
-            const upperN = n.toUpperCase();
-            const query = upperN + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])";
-            const b = "$CsBaseUrl/investigate/search?repo=all&query=" + encodeURIComponent(query);
+            const b = "$CsBaseUrl/investigate/search?repo=all&query=" + encodeURIComponent(n.toUpperCase() + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])");
             document.querySelectorAll('.cs-scope-btn').forEach(btn => { btn.href = b + btn.getAttribute('data-time-params'); });
             const p = document.getElementById('primary-cs-pivot');
             if(p) p.href = b + p.getAttribute('data-time-params');
-            document.getElementById('cs-host-details').href = "$CsBaseUrl/host-management/hosts?filter=hostname%3A%27" + upperN + "%27";
-            document.getElementById('current-target-display').innerText = upperN;
+            document.getElementById('cs-host-details').href = "$CsBaseUrl/host-management/hosts?filter=hostname%3A%27" + n.toUpperCase() + "%27";
+            document.getElementById('current-target-display').innerText = n.toUpperCase();
         }
     </script>
 </head>
@@ -233,7 +230,7 @@ function Write-Report {
         <div class="grid">
             <div class="card"><span class="label">User</span><span class="value">$($anchor.Username)</span></div>
             <div class="card"><span class="label">IP Address</span><span class="value">$($anchor.IPAddress)</span></div>
-            <div class="card"><span class="label">Location</span><span class="value">$($anchor.Location)</span></div>
+            <div class="card"><span class="label">Geo Detail</span><span class="value">$($anchor.City), $($anchor.State)</span></div>
             <div class="card"><span class="label">Application</span><span class="value">$($anchor.Application)</span></div>
         </div>
         <div class="section-title">SOC TOOLBOX</div>
@@ -245,11 +242,7 @@ function Write-Report {
         <div class="grid">
             <div class="card">
                 <span class="label">CrowdStrike EDR</span>
-                $(
-                    $upperId = $AnchorDevice.DeviceId.ToUpper()
-                    $query = $upperId + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])"
-                    Get-ScopeButtons -BaseUrl ("$CsBaseUrl/investigate/search?repo=all&query=" + [uri]::EscapeDataString($query)) -ToolType "CS" -TimeObj $UtcTime
-                )
+                $(Get-ScopeButtons -BaseUrl ("$CsBaseUrl/investigate/search?repo=all&query=" + [uri]::EscapeDataString($AnchorDevice.DeviceId.ToUpper() + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])")) -ToolType "CS" -TimeObj $UtcTime)
                 <a href="$CsBaseUrl/host-management/hosts?filter=hostname%3A%27$($AnchorDevice.DeviceId.ToUpper())%27" id="cs-host-details" target="_blank" style="background:rgba(88, 166, 255, 0.1); color:var(--blue); border:1px solid var(--blue); padding:8px 15px; border-radius:4px; font-weight:bold; display:block; text-align:center; text-decoration:none; font-size:11px; margin-top:10px;">VIEW HOST DETAILS</a>
             </div>
             <div class="card">
@@ -261,9 +254,9 @@ function Write-Report {
                 $(Get-ScopeButtons -BaseUrl "https://us.idr.insight.rapid7.com/op/$Rapid7OrgId#/search?logs=$Rapid7LogList&query=where($EncodedIP)" -ToolType "R7" -TimeObj $UtcTime)
             </div>
         </div>
-        <div class="section-title">STATISTICAL BASELINE</div>
         $(if($Status -eq "FINAL"){
             @"
+        <div class="section-title">STATISTICAL BASELINE</div>
         <table class="comparison-table">
             <thead><tr><th>Attribute</th><th>Value</th><th>Last Seen</th><th>24h</th><th>7d</th><th>30d</th></tr></thead>
             <tbody>
@@ -279,7 +272,7 @@ function Write-Report {
             @"
         <div class="section-title">DEVICE CORRELATION MATRIX</div>
         <table class="comparison-table">
-            <thead><tr><th>Device ID</th><th>IPs</th><th>OS/Browser</th><th>Posture</th><th>24h</th><th>7d</th><th>30d</th></tr></thead>
+            <thead><tr><th>Device ID</th><th>IPs</th><th>OS/Browser</th><th>Posture</th><th>30d Freq</th></tr></thead>
             <tbody>$($MatrixRows -join "")</tbody>
         </table>
 "@
@@ -289,12 +282,14 @@ function Write-Report {
 </html>
 "@
     $html | Out-File $reportPath -Encoding utf8
-    Write-Host "HTML Report updated: $reportPath"
+    Write-Host "HTML Report generated: $reportPath"
 }
 
-# --- MAIN ---
+# --- START EXECUTION ---
 Write-Host "`n=== DIAGNOSTICS ==="
 $files = Get-ChildItem -Path $CaseFolder -Filter "*.csv"
+if ($files.Count -eq 0) { Write-Host "No CSV files found in $CaseFolder"; exit }
+
 $data = @{}
 $flatEvents = New-Object System.Collections.Generic.List[pscustomobject]
 
@@ -325,6 +320,7 @@ foreach ($f in $files) {
 }
 
 # Anchor Selection
+Write-Host "`n=== ANCHOR SELECTION ==="
 $anchor = $null
 if($AnchorRequestId){
     $anchor = $flatEvents | Where-Object { $_.RequestId -eq $AnchorRequestId } | Select-Object -First 1
@@ -345,13 +341,19 @@ if($anchor){
     $utcTime = if($anchor.EventTime){$anchor.EventTime}else{[datetime]::UtcNow}
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
+    
     $encodedIP = [uri]::EscapeDataString($anchor.IPAddress)
     $trunc = "Unknown"; if($anchor.Username -and $anchor.Username -match "@"){$trunc = $anchor.Username.Split('@')[0]}elseif($anchor.Username){$trunc=$anchor.Username}
     $lsUrl = "$LS_URL/user.aspx?username=$trunc&userdomain=$LS_DOMAIN"
     
+    # Persistent Filename logic
+    $ts = (Get-Date).ToString("yyyyddMM-hhmmssfff tt")
+    $targetLabel = if($AnchorDevice.DeviceId -ne "Unknown") { $AnchorDevice.DeviceId.ToUpper() } else { $trunc }
+    $reportFileName = "$ts EST RiskyUserAlert $($targetLabel) report.html"
+
     # Phase 1: Progressive Report
-    Write-Host "`nGenerating Initial Pivot Report..."
-    Write-Report -Status "INITIAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision "PENDING" -RiskScore 0 -UniqueFlaws @() -IsNewIP $false -IsNewLocation $false -IsNewApp $false -MatrixRows @() -Set24h @() -Set7d @() -Set30d @() -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ColumnAliases $script:ColumnAliases
+    Write-Host "Generating Initial Pivot Report..."
+    Write-Report -Status "INITIAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision "PENDING" -RiskScore 0 -UniqueFlaws @() -IsNewIP $false -IsNewLocation $false -IsNewApp $false -MatrixRows @() -Set24h @() -Set7d @() -Set30d @() -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ReportFileName $reportFileName
 
     # Phase 2: Heavy Math
     Write-Host "Processing Baseline Metrics..."
@@ -367,13 +369,16 @@ if($anchor){
         $dId = $g.Name; $evs = $g.Group
         $ips = $evs.IPAddress | Select-Object -Unique
         $rowStyle = if($dId -eq $AnchorDevice.DeviceId){"class='anchor-row-highlight'"}else{""}
-        "<tr $rowStyle><td>$dId</td><td>$($ips -join ',')</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['OperatingSystem'])</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Compliant'])</td><td>$($evs.Count)</td><td>-</td><td>-</td></tr>"
+        "<tr $rowStyle><td>$dId</td><td>$($ips -join ',')</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['OperatingSystem'])</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Compliant'])</td><td>$($evs.Count)</td></tr>"
     }
     
     $risk = Get-RiskScore -Anchor $anchor -IsNewIP $isNewIP -IsNewDevice $isNewDevice -AnchorDevice $AnchorDevice
     $finalDecision = Get-DecisionBucket -Anchor $anchor -Score $risk
     
-    Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $finalDecision -RiskScore $risk -UniqueFlaws @() -IsNewIP $isNewIP -IsNewLocation $false -IsNewApp $false -MatrixRows $matrix -Set24h $set24h -Set7d $set7d -Set30d $set30d -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ColumnAliases $script:ColumnAliases
-}
+    # Phase 3: Final Update
+    Write-Host "Finalizing Report..."
+    Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $finalDecision -RiskScore $risk -UniqueFlaws @() -IsNewIP $isNewIP -IsNewLocation $false -IsNewApp $false -MatrixRows $matrix -Set24h $set24h -Set7d $set7d -Set30d $set30d -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ReportFileName $reportFileName
+} else { Write-Host "No anchor found for Request ID: $AnchorRequestId" }
+
 Write-Host "`nDONE"
 Write-Host "REGRESSION_CHECK: OK"
