@@ -11,7 +11,7 @@ param(
 
 # =========================
 # Risky User Bot - SOC Triage
-# FINAL PRODUCTION BUILD
+# FINAL DEFINITIVE BUILD
 # =========================
 
 # 1. Load Local Environment (.env)
@@ -136,8 +136,6 @@ function Build-TicketStory {
     $parts = @()
     $parts += "Anchor sign-in: user=$($Anchor.Username), time=$($Anchor.EventTime), app=$($Anchor.Application), status=$($Anchor.Status)."
     $parts += "IP=$($Anchor.IPAddress), location=$($Anchor.Location), requestId=$($Anchor.RequestId)."
-    $parts += "MFA: result=$($Anchor.MfaResult), ca=$($Anchor.ConditionalAccess)."
-    $parts += "Novelty: newIP=$IsNewIP, newLocation=$IsNewLocation, newApp=$IsNewApp."
     $parts += "Decision: $DecisionBucket."
     return ($parts -join " ")
 }
@@ -168,11 +166,155 @@ function Get-ScopeButtons {
     return $html + "</div>"
 }
 
-# --- START EXECUTION ---
+function Write-Report {
+    param($Status, $Anchor, $AnchorDevice, $UtcTime, $EstTime, $CstTime, $Decision, $RiskScore, $UniqueFlaws, $IsNewIP, $IsNewLocation, $IsNewApp, $MatrixRows, $Set24h, $Set7d, $Set30d, $CaseFolder, $Rapid7OrgId, $Rapid7LogList, $EncodedIP, $PpUser, $PpSince, $PpUntil, $lsUserUrl, $CsBaseUrl, $ReportFileName, $PrefixInfo)
+    
+    $statusBadgeClass = if($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
+    $reportPath = Join-Path $CaseFolder $ReportFileName
+
+    $html = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SOC Report [$Status] - $($anchor.RequestId)</title>
+    <style>
+        :root { --bg: #0d1117; --card-bg: #161b22; --border: #30363d; --text-primary: #f0f6fc; --text-secondary: #8b949e; --blue: #58a6ff; --green: #3fb950; --red: #f85149; --orange: #d29922; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--bg); color: var(--text-primary); margin: 0; padding: 20px; font-size: 13px; }
+        .container { max-width: 1400px; margin: auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 20px; }
+        .badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; border: 1px solid transparent; }
+        .badge-success { background: rgba(63, 185, 80, 0.15); color: var(--green); border-color: var(--green); }
+        .badge-fail { background: rgba(248, 81, 73, 0.15); color: var(--red); border-color: var(--red); }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+        .label { color: var(--text-secondary); font-size: 10px; text-transform: uppercase; font-weight: 600; display: block; margin-bottom: 6px; }
+        .value { font-size: 14px; font-weight: 500; font-family: 'Cascadia Code', monospace; word-break: break-all; }
+        .section-title { font-size: 14px; color: var(--blue); margin: 24px 0 12px 0; border-left: 4px solid var(--blue); padding-left: 10px; font-weight: 600; }
+        .decision-banner { background: var(--card-bg); border: 2px solid var(--blue); border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 20px; }
+        .decision-value { font-size: 32px; font-weight: 800; color: var(--blue); text-transform: uppercase; }
+        .scope-group { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+        .scope-btn { background: #21262d; color: #8b949e; border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; font-size: 11px; text-decoration: none; font-weight: bold; }
+        .scope-btn:hover { background: var(--blue); color: white; }
+        .primary-pivot-btn { background: var(--blue); color: white; padding: 10px 20px; border-radius: 4px; font-weight: bold; display: block; text-align: center; text-decoration: none; margin-bottom: 10px; }
+        .comparison-table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+        .comparison-table th { background: #21262d; color: var(--blue); text-align: left; padding: 12px; font-size: 11px; }
+        .comparison-table td { padding: 12px; border-bottom: 1px solid var(--border); }
+        .anchor-row-highlight { background: rgba(88, 166, 255, 0.1) !important; border-left: 4px solid var(--blue); }
+    </style>
+    <script>
+        function copy(t) { navigator.clipboard.writeText(t); alert('Copied: ' + t); }
+        function updateDynamicPivots(n) {
+            if(!n) return;
+            const u = n.toUpperCase();
+            const q = encodeURIComponent(u + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])");
+            const b = "$CsBaseUrl/investigate/search?repo=all&query=" + q;
+            document.querySelectorAll('.cs-scope-btn').forEach(btn => { btn.href = b + btn.getAttribute('data-time-params'); });
+            document.getElementById('primary-cs-pivot').href = b + document.getElementById('primary-cs-pivot').getAttribute('data-time-params');
+            document.getElementById('cs-host-details').href = "$CsBaseUrl/host-management/hosts?filter=hostname%3A%27" + u + "%27";
+            document.getElementById('current-target-display').innerText = u;
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Risky User Analysis</h1>
+            <div style="font-family: monospace; color: var(--text-secondary)">ID: $($anchor.RequestId)</div>
+        </div>
+
+        <div class="decision-banner">
+            <div class="label">Behavioral Risk Score: $RiskScore</div>
+            <div class="decision-value">$($Decision.ToUpper())</div>
+        </div>
+
+        <div class="section-title">TIME CORRELATION (UTC / EST / CST)</div>
+        <div class="grid">
+            <div class="card"><span class="label">UTC</span><span class="value">$($UtcTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+            <div class="card"><span class="label">EST</span><span class="value">$($EstTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+            <div class="card"><span class="label">CST</span><span class="value">$($CstTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+        </div>
+
+        <div class="section-title">IDENTITY & NETWORK ORIGIN</div>
+        <div class="grid">
+            <div class="card">
+                <span class="label">User</span><span class="value">$($anchor.Username)</span>
+                <div style="margin-top:8px;">
+                    <a href="https://portal.azure.com/#view/Microsoft_AAD_IAM/UserDetailsMenuBlade/~/overview/userId/$($anchor.Username)" target="_blank" style="color:var(--blue); font-size:11px;">Entra Profile</a>
+                </div>
+            </div>
+            <div class="card">
+                <span class="label">IP Address</span><span class="value">$($anchor.IPAddress)</span>
+                $PrefixInfo
+                <div style="margin-top:8px; display:flex; gap:10px;">
+                    <a href="https://www.virustotal.com/gui/ip-address/$($anchor.IPAddress)" target="_blank" style="color:var(--blue); font-size:11px;">VirusTotal</a>
+                    <a href="https://bgp.he.net/ip/$($anchor.IPAddress)" target="_blank" style="color:var(--orange); font-size:11px;">BGP Lookup</a>
+                </div>
+            </div>
+            <div class="card"><span class="label">Application</span><span class="value">$($anchor.Application)</span></div>
+        </div>
+
+        <div class="section-title">SOC TOOLBOX</div>
+        <div class="card" style="border: 1px dashed var(--blue); margin-bottom: 15px;">
+            <span class="label">Manual Host Override (from Lansweeper)</span>
+            <input type="text" placeholder="Paste computer name..." onchange="updateDynamicPivots(this.value)" style="width:100%; background:#0d1117; color:white; border:1px solid var(--border); padding:8px; border-radius:4px;">
+            <div style="font-size:10px; margin-top:5px; color:var(--text-secondary)">Active Pivot: <span id="current-target-display" style="color:var(--blue)">$($AnchorDevice.DeviceId)</span></div>
+        </div>
+        <div class="grid">
+            <div class="card">
+                <span class="label">CrowdStrike EDR</span>
+                $(
+                    $q = [uri]::EscapeDataString($AnchorDevice.DeviceId.ToUpper() + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])")
+                    Get-ScopeButtons -BaseUrl "$CsBaseUrl/investigate/search?repo=all&query=$q" -ToolType "CS" -TimeObj $UtcTime
+                )
+                <a href="$CsBaseUrl/host-management/hosts?filter=hostname%3A%27$($AnchorDevice.DeviceId.ToUpper())%27" id="cs-host-details" target="_blank" style="background:rgba(88, 166, 255, 0.1); color:var(--blue); border:1px solid var(--blue); padding:8px 15px; border-radius:4px; display:block; text-align:center; text-decoration:none; margin-top:10px; font-weight:bold;">VIEW HOST DETAILS</a>
+            </div>
+            <div class="card">
+                <span class="label">Proofpoint Search</span>
+                <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$PpUser&since=$PpSince&until=$PpUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; padding:10px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold; margin-bottom:8px;">Email (3D Lookback)</a>
+                <a href="https://us.threatresponse.proofpoint.com/incidents?search=$PpUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:10px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold;">TRAP Incidents</a>
+            </div>
+            <div class="card">
+                <span class="label">Lansweeper User</span>
+                <a href="$lsUserUrl" target="_blank" style="background:var(--green); color:white; padding:10px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold;">View User Profile</a>
+            </div>
+            <div class="card">
+                <span class="label">Rapid7 Logs</span>
+                $(Get-ScopeButtons -BaseUrl "https://us.idr.insight.rapid7.com/op/$Rapid7OrgId#/search?logs=$Rapid7LogList&query=where($EncodedIP)" -ToolType "R7" -TimeObj $UtcTime)
+            </div>
+        </div>
+
+        <div class="section-title">STATISTICAL BASELINE (SIDE-BY-SIDE)</div>
+        <table class="comparison-table">
+            <thead><tr><th>Attribute</th><th>Value</th><th>Last Seen</th><th>24h</th><th>7d</th><th>30d</th></tr></thead>
+            <tbody>
+                <tr><td>Device ID</td><td>$($AnchorDevice.DeviceId)</td><td>$(Get-LastSeen $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set30d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set24h)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set7d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $Set30d)</td></tr>
+                <tr><td>IP Address</td><td>$($anchor.IPAddress)</td><td>$(Get-LastSeen $anchor.IPAddress @('IP address') $Set30d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $Set24h)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $Set7d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $Set30d)</td></tr>
+            </tbody>
+        </table>
+
+        <div class="section-title">DEVICE CORRELATION MATRIX (30D)</div>
+        <table class="comparison-table">
+            <thead><tr><th>Device ID</th><th>IPs</th><th>OS / Browser</th><th>Posture</th><th>30d Seen</th><th>Last Seen</th></tr></thead>
+            <tbody>$($MatrixRows -join "")</tbody>
+        </table>
+
+        <div class="section-title">🧠 ANALYST NOTES: IPV6 TRIAGE</div>
+        <div class="story-box" style="border-left-color: var(--orange);">
+            <p><strong>Why /64 matters:</strong> IPv6 addresses are vast. Attackers often rotate the last 64 bits (Interface ID) to bypass single-IP blocks. The first 64 bits (Prefix) usually identify the specific network or residential household.</p>
+            <p><strong>SOC Action:</strong> If you see multiple failures from the same /64 prefix (even with different full IPs), you are likely dealing with a single automated script or actor. <strong>Consider blocking the entire /64 range</strong> instead of the individual address.</p>
+        </div>
+    </div>
+</body>
+</html>
+"@
+    $html | Out-File $reportPath -Encoding utf8
+    Write-Host "`nHTML Report generated: $reportPath"
+}
+
+# --- MAIN ---
 Write-Host "`n=== DIAGNOSTICS ==="
 $files = Get-ChildItem -Path $CaseFolder -Filter "*.csv"
-if ($files.Count -eq 0) { Write-Host "No CSV files found in $CaseFolder"; exit }
-
 $data = @{}
 $flatEvents = New-Object System.Collections.Generic.List[pscustomobject]
 
@@ -180,8 +322,8 @@ foreach ($file in $files) {
     Write-Host "Loading: $($file.Name)... " -NoNewline
     try {
         $raw = try { Import-Csv $file.FullName -ErrorAction Stop } catch {
-            $c = Get-Content $file.FullName; $hRow = ($c[0] -split ",").Trim(); $seen = @{}; 
-            $sh = foreach($col in $hRow){ $n=if(!$col){"Blank"}else{$col}; if($seen.ContainsKey($n)){$seen[$n]++; "$n`_$($seen[$n])"}else{$seen[$n]=1;$n} }
+            $c = Get-Content $file.FullName; $hR = ($c[0] -split ",").Trim(); $seen = @{}; 
+            $sh = foreach($col in $hR){ $n=if(!$col){"Blank"}else{$col}; if($seen.ContainsKey($n)){$seen[$n]++; "$n`_$($seen[$n])"}else{$seen[$n]=1;$n} }
             $c | Select-Object -Skip 1 | ConvertFrom-Csv -Header $sh
         }
         $norm = New-Object System.Collections.Generic.List[pscustomobject]
@@ -198,10 +340,10 @@ foreach ($file in $files) {
         }
         $data[$file.Name] = $norm
         Write-Host "OK ($($norm.Count) rows)"
-    } catch { Write-Host "FAILED: $($_.Exception.Message)" }
+    } catch { Write-Host "FAILED" }
 }
 
-# Anchor Selection
+# Anchor selection
 Write-Host "`n=== ANCHOR SELECTION ==="
 $anchor = $null
 if($AnchorRequestId){
@@ -209,8 +351,6 @@ if($AnchorRequestId){
 }
 
 if($anchor){
-    Write-Host "Found anchor: $($anchor.RequestId)"
-    
     $AnchorDevice = [pscustomobject]@{
         DeviceId = (Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["DeviceId"]).ToUpper()
         OperatingSystem = Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["OperatingSystem"]
@@ -228,13 +368,12 @@ if($anchor){
     
     $encodedIP = [uri]::EscapeDataString($anchor.IPAddress)
     $trunc = "Unknown"; if($anchor.Username -and $anchor.Username -match "@"){$trunc = $anchor.Username.Split('@')[0]}elseif($anchor.Username){$trunc=$anchor.Username}
-    $lsUserUrl = "https://mxpcorls01:82/user.aspx?username=$trunc&userdomain=MAXOR"
-    
+    $lsUserUrl = "$LS_URL/user.aspx?username=$trunc&userdomain=$LS_DOMAIN"
     $ppUser = [uri]::EscapeDataString($anchor.Username)
     $ppSince = $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
     $ppUntil = $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-    # Advanced Analysis
+    # Metrics
     Write-Host "Processing Baseline Metrics..."
     $set24h = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }
     $set7d  = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }
@@ -254,140 +393,17 @@ if($anchor){
     $riskScore = Get-RiskScore -Anchor $anchor -IsNewIP $isNewIP -IsNewDevice $isNewDevice -AnchorDevice $AnchorDevice
     $decision = Get-DecisionBucket -Anchor $anchor -Score $riskScore
 
-    # Filename logic
     $ts = (Get-Date).ToString("yyyyddMM-hhmmssfff tt")
-    $targetLabel = if($AnchorDevice.DeviceId -ne "Unknown") { $AnchorDevice.DeviceId } else { $trunc }
-    $reportFileName = "$ts EST RiskyUserAlert $($targetLabel) report.html"
-    $reportPath = Join-Path $CaseFolder $reportFileName
+    $label = if($AnchorDevice.DeviceId -ne "Unknown") { $AnchorDevice.DeviceId } else { $trunc }
+    $fName = "$ts EST RiskyUserAlert $($label) report.html"
 
-    $html = @"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>SOC Report - $($anchor.RequestId)</title>
-    <style>
-        :root { --bg: #0d1117; --card-bg: #161b22; --border: #30363d; --text-primary: #f0f6fc; --text-secondary: #8b949e; --blue: #58a6ff; --green: #3fb950; --red: #f85149; --orange: #d29922; }
-        body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--bg); color: var(--text-primary); margin: 0; padding: 20px; font-size: 13px; }
-        .container { max-width: 1400px; margin: auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 20px; }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 20px; }
-        .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-        .label { color: var(--text-secondary); font-size: 10px; text-transform: uppercase; font-weight: 600; display: block; margin-bottom: 6px; }
-        .value { font-size: 14px; font-weight: 500; font-family: monospace; word-break: break-all; }
-        .section-title { font-size: 14px; color: var(--blue); margin: 24px 0 12px 0; border-left: 4px solid var(--blue); padding-left: 10px; font-weight: 600; }
-        .decision-banner { background: var(--card-bg); border: 2px solid var(--blue); border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 20px; }
-        .decision-value { font-size: 32px; font-weight: 800; color: var(--blue); text-transform: uppercase; }
-        .scope-group { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
-        .scope-btn { background: #21262d; color: #8b949e; border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; font-size: 11px; text-decoration: none; font-weight: bold; }
-        .scope-btn:hover { background: var(--blue); color: white; }
-        .primary-pivot-btn { background: var(--blue); color: white; padding: 10px 20px; border-radius: 4px; font-weight: bold; display: block; text-align: center; text-decoration: none; margin-bottom: 10px; }
-        .comparison-table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
-        .comparison-table th { background: #21262d; color: var(--blue); text-align: left; padding: 12px; font-size: 11px; }
-        .comparison-table td { padding: 12px; border-bottom: 1px solid var(--border); }
-        .anchor-row-highlight { background: rgba(88, 166, 255, 0.1) !important; border-left: 4px solid var(--blue); }
-    </style>
-    <script>
-        function copy(t) { navigator.clipboard.writeText(t); alert('Copied: ' + t); }
-        function updateDynamicPivots(n) {
-            if(!n) return;
-            const u = n.toUpperCase();
-            const q = encodeURIComponent(u + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])");
-            const b = "$CS_BASE/investigate/search?repo=all&query=" + q;
-            document.querySelectorAll('.cs-scope-btn').forEach(btn => { btn.href = b + btn.getAttribute('data-time-params'); });
-            document.getElementById('primary-cs-pivot').href = b + document.getElementById('primary-cs-pivot').getAttribute('data-time-params');
-            document.getElementById('cs-host-details').href = "$CS_BASE/host-management/hosts?filter=hostname%3A%27" + u + "%27";
-            document.getElementById('current-target-display').innerText = u;
+    # Prefix Logic
+    $ipVal = $anchor.IPAddress; $prefixInfo = ""; if ($ipVal -match ':') {
+        $segments = $ipVal.Split(':'); if ($segments.Count -ge 4) {
+            $prefix64 = ($segments[0..3] -join ':') + "::/64"; $prefixInfo = "<div style='font-size:11px; color:var(--orange); margin-top:4px;'>Network Prefix: <span class='value'>$prefix64</span></div>"
         }
-    </script>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>Risky User Analysis [FINAL]</h1>
-            <div style="font-family: monospace; color: var(--text-secondary)">ID: $($anchor.RequestId)</div>
-        </div>
+    }
 
-        <div class="decision-banner">
-            <div class="label">Behavioral Risk Score: $riskScore</div>
-            <div class="decision-value">$($decision.ToUpper())</div>
-        </div>
-
-        <div class="section-title">TIME CORRELATION (UTC / EST / CST)</div>
-        <div class="grid">
-            <div class="card"><span class="label">UTC</span><span class="value">$($utcTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
-            <div class="card"><span class="label">EST</span><span class="value">$($estTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
-            <div class="card"><span class="label">CST</span><span class="value">$($cstTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
-        </div>
-
-        <div class="section-title">IDENTITY & NETWORK ORIGIN</div>
-        <div class="grid">
-            <div class="card">
-                <span class="label">User</span><span class="value">$($anchor.Username)</span>
-                <div style="margin-top:8px;">
-                    <a href="https://portal.azure.com/#view/Microsoft_AAD_IAM/UserDetailsMenuBlade/~/overview/userId/$($anchor.Username)" target="_blank" style="color:var(--blue); font-size:11px;">Entra Profile</a>
-                </div>
-            </div>
-            <div class="card">
-                <span class="label">IP Address</span><span class="value">$($anchor.IPAddress)</span>
-                <div style="margin-top:8px; display:flex; gap:10px;">
-                    <a href="https://www.virustotal.com/gui/ip-address/$($anchor.IPAddress)" target="_blank" style="color:var(--blue); font-size:11px;">VirusTotal</a>
-                    <a href="https://bgp.he.net/ip/$($anchor.IPAddress)" target="_blank" style="color:var(--orange); font-size:11px;">BGP Lookup</a>
-                </div>
-            </div>
-            <div class="card"><span class="label">Application</span><span class="value">$($anchor.Application)</span></div>
-        </div>
-
-        <div class="section-title">SOC TOOLBOX (ONE-CLICK PIVOTS)</div>
-        <div class="card" style="border: 1px dashed var(--blue); margin-bottom: 15px;">
-            <span class="label">Manual Host Override (from Lansweeper)</span>
-            <input type="text" placeholder="Paste computer name..." onchange="updateDynamicPivots(this.value)" style="width:100%; background:#0d1117; color:white; border:1px solid var(--border); padding:8px; border-radius:4px;">
-            <div style="font-size:10px; margin-top:5px; color:var(--text-secondary)">Active Pivot: <span id="current-target-display" style="color:var(--blue)">$($AnchorDevice.DeviceId)</span></div>
-        </div>
-        <div class="grid">
-            <div class="card">
-                <span class="label">CrowdStrike EDR</span>
-                $(
-                    $q = [uri]::EscapeDataString($AnchorDevice.DeviceId.ToUpper() + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])")
-                    Get-ScopeButtons -BaseUrl "$CS_BASE/investigate/search?repo=all&query=$q" -ToolType "CS" -TimeObj $utcTime
-                )
-                <a href="$CS_BASE/host-management/hosts?filter=hostname%3A%27$($AnchorDevice.DeviceId.ToUpper())%27" id="cs-host-details" target="_blank" style="background:rgba(88, 166, 255, 0.1); color:var(--blue); border:1px solid var(--blue); padding:8px 15px; border-radius:4px; display:block; text-align:center; text-decoration:none; margin-top:10px; font-weight:bold;">VIEW HOST DETAILS</a>
-            </div>
-            <div class="card">
-                <span class="label">Proofpoint Search</span>
-                <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$ppUser&since=$ppSince&until=$ppUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; padding:10px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold; margin-bottom:8px;">Email (3D Lookback)</a>
-                <a href="https://us.threatresponse.proofpoint.com/incidents?search=$ppUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:10px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold;">TRAP Incidents</a>
-            </div>
-            <div class="card">
-                <span class="label">Lansweeper User</span>
-                <a href="$lsUserUrl" target="_blank" style="background:var(--green); color:white; padding:10px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold;">View User Profile</a>
-            </div>
-            <div class="card">
-                <span class="label">Rapid7 Logs</span>
-                $(Get-ScopeButtons -BaseUrl "https://us.idr.insight.rapid7.com/op/$RAPID7_ORG_ID#/search?logs=$RAPID7_LOGS&query=where($encodedIP)" -ToolType "R7" -TimeObj $utcTime)
-            </div>
-        </div>
-
-        <div class="section-title">STATISTICAL BASELINE (SIDE-BY-SIDE)</div>
-        <table class="comparison-table">
-            <thead><tr><th>Attribute</th><th>Value</th><th>Last Seen</th><th>24h</th><th>7d</th><th>30d</th></tr></thead>
-            <tbody>
-                <tr><td>Device ID</td><td>$($AnchorDevice.DeviceId)</td><td>$(Get-LastSeen $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $set30d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $set24h)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $set7d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $set30d)</td></tr>
-                <tr><td>IP Address</td><td>$($anchor.IPAddress)</td><td>$(Get-LastSeen $anchor.IPAddress @('IP address') $set30d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $set24h)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $set7d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $set30d)</td></tr>
-            </tbody>
-        </table>
-
-        <div class="section-title">DEVICE CORRELATION MATRIX (30D)</div>
-        <table class="comparison-table">
-            <thead><tr><th>Device ID</th><th>IPs</th><th>OS / Browser</th><th>Posture</th><th>30d Seen</th><th>Last Seen</th></tr></thead>
-            <tbody>$($matrixRows -join "")</tbody>
-        </table>
-    </div>
-</body>
-</html>
-"@
-    $html | Out-File $reportPath -Encoding utf8
-    Write-Host "`nHTML Report generated at: $reportPath"
-} else { Write-Host "No anchor found for ID: $AnchorRequestId" }
-
+    Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $decision -RiskScore $riskScore -UniqueFlaws @() -IsNewIP $isNewIP -IsNewLocation $false -IsNewApp $false -MatrixRows $matrixRows -Set24h $set24h -Set7d $set7d -Set30d $set30d -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser $ppUser -PpSince $ppSince -PpUntil $ppUntil -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ReportFileName $fName -PrefixInfo $prefixInfo
+}
 Write-Host "REGRESSION_CHECK: OK"
