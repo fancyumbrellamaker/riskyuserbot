@@ -921,27 +921,29 @@ if ($anchor) {
             setTimeout(() => msg.style.opacity = 0, 2000);
         }
 
-        function updateDynamicPivots(newName) {
-            if(!newName) return;
-            const csBase = "https://falcon.us-2.crowdstrike.com/investigate/search?repo=all&query=" + encodeURIComponent("ComputerName='" + newName + "' | table @timestamp, ComputerName, UserName, event_simpleName, ImageFileName, CommandLine, LocalAddressIP, RemoteAddressIP");
-            
-            // Update all scope buttons for CrowdStrike
-            document.querySelectorAll('.cs-scope-btn').forEach(btn => {
-                const timeParams = btn.getAttribute('data-time-params');
-                btn.href = csBase + timeParams;
-            });
-            
-            // Update the primary PIVOT button for CS
-            const primaryCs = document.getElementById('primary-cs-pivot');
-            if(primaryCs) primaryCs.href = csBase + primaryCs.getAttribute('data-time-params');
-
-            // Update host details link
-            const hostDetails = document.getElementById('cs-host-details');
-            if(hostDetails) hostDetails.href = "https://falcon.us-2.crowdstrike.com/host-management/hosts?filter=hostname%233A%27" + newName + "%27";
-            
-            document.getElementById('current-target-display').innerText = newName;
-            document.getElementById('current-target-display').style.color = "var(--green)";
-        }
+          function updateDynamicPivots(newName) {
+              if(!newName) return;
+              const u = newName.toUpperCase();
+              const q = encodeURIComponent(u + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])");
+              const csBase = "https://falcon.us-2.crowdstrike.com/investigate/search?repo=all&query=" + q;
+              
+              // Update all scope buttons for CrowdStrike
+              document.querySelectorAll('.cs-scope-btn').forEach(btn => {
+                  const timeParams = btn.getAttribute('data-time-params');
+                  btn.href = csBase + timeParams;
+              });
+              
+              // Update the primary PIVOT button for CS
+              const primaryCs = document.getElementById('primary-cs-pivot');
+              if(primaryCs) primaryCs.href = csBase + primaryCs.getAttribute('data-time-params');
+  
+              // Update host details link
+              const hostDetails = document.getElementById('cs-host-details');
+              if(hostDetails) hostDetails.href = "https://falcon.us-2.crowdstrike.com/host-management/hosts?filter=hostname%3A%27" + u + "%27";
+              
+              document.getElementById('current-target-display').innerText = u;
+              document.getElementById('current-target-display').style.color = "var(--green)";
+          }
     </script>
 </head>
 <body>
@@ -1122,21 +1124,22 @@ if ($anchor) {
         </div>
 
         <div class="grid">
-            <div class="card">
-                <span class="label">CrowdStrike EDR (Advanced Search)</span>
-                <div class="links" style="margin-top:10px;">
-                    <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Process Storyline for: $($AnchorDevice.DeviceId)</div>
-                    $(
-                        # New Advanced Search URL Schema with high-value SOC table query
-                        $cqlQuery = [uri]::EscapeDataString("ComputerName='$($AnchorDevice.DeviceId)' | table @timestamp, ComputerName, UserName, event_simpleName, ImageFileName, CommandLine, LocalAddressIP, RemoteAddressIP")
-                        $csBase = "https://falcon.us-2.crowdstrike.com/investigate/search?repo=all&query=$cqlQuery"
-                        Get-ScopeButtons -BaseUrl $csBase -ToolType "CS" -TimeObj $utcTime
-                    )
-                    <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:8px;">
-                        <a href="https://falcon.us-2.crowdstrike.com/host-management/hosts?filter=hostname%233A%27$($AnchorDevice.DeviceId)%27" id="cs-host-details" target="_blank" style="color:var(--blue); font-size:11px; text-decoration:none;">View Host Details Page</a>
-                    </div>
-                </div>
-            </div>
+              <div class="card">
+                  <span class="label">CrowdStrike EDR (Advanced Search)</span>
+                  <div class="links" style="margin-top:10px;">
+                      <div style="font-size:12px; font-weight:bold; color:white; margin-bottom:5px;">Process Storyline for: $($AnchorDevice.DeviceId.ToUpper())</div>
+                      $(
+                          # New Advanced Search URL Schema with high-value SOC table query
+                          $u = $AnchorDevice.DeviceId.ToUpper()
+                          $cql = "$u | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])"
+                          $csBase = "https://falcon.us-2.crowdstrike.com/investigate/search?repo=all&query=" + [uri]::EscapeDataString($cql)
+                          Get-ScopeButtons -BaseUrl $csBase -ToolType "CS" -TimeObj $utcTime
+                      )
+                      <div style="margin-top:12px; border-top:1px solid var(--border); padding-top:8px;">
+                          <a href="https://falcon.us-2.crowdstrike.com/host-management/hosts?filter=hostname%3A%27$($AnchorDevice.DeviceId.ToUpper())%27" id="cs-host-details" target="_blank" style="background:rgba(88, 166, 255, 0.1); color:var(--blue); border:1px solid var(--blue); padding:8px 15px; border-radius:4px; font-weight:bold; display:block; text-align:center; text-decoration:none; font-size:11px; margin-top:10px;">VIEW HOST DETAILS</a>
+                      </div>
+                  </div>
+              </div>
             <div class="card">
                 <span class="label">Proofpoint (Mail History)</span>
                 <div class="links" style="margin-top:10px;">
