@@ -430,6 +430,9 @@ else {
                 $r | Add-Member -MemberType NoteProperty -Name "EventTime" -Value $dt -Force
                 $r | Add-Member -MemberType NoteProperty -Name "RequestId" -Value (Get-Value -Row $r -ColumnName "Request ID") -Force
                 $r | Add-Member -MemberType NoteProperty -Name "IPAddress" -Value (Get-Value -Row $r -ColumnName "IP address") -Force
+                $r | Add-Member -MemberType NoteProperty -Name "Username" -Value (Get-Value -Row $r -ColumnName "Username") -Force
+                $r | Add-Member -MemberType NoteProperty -Name "Application" -Value (Get-Value -Row $r -ColumnName "Application") -Force
+                $r | Add-Member -MemberType NoteProperty -Name "Location" -Value (Get-Value -Row $r -ColumnName "Location") -Force
                 $r | Add-Member -MemberType NoteProperty -Name "MfaResult" -Value "N/A" -Force
                 $r | Add-Member -MemberType NoteProperty -Name "ConditionalAccess" -Value (Get-FieldValue -Row $r -Aliases @("Conditional Access")) -Force
                 
@@ -539,9 +542,13 @@ else {
     }
 }
 
-if ($anchor) {
-    $anchor | Format-List EventTime, Username, IPAddress, Location, Application, Status, ConditionalAccess, MfaResult, RequestId
-    
+  if ($anchor) {
+      Write-Host "`n=== DEBUG: ANCHOR ROW PROPERTIES ==="
+      $anchor.PSObject.Properties | ForEach-Object {
+          Write-Host "Property: $($_.Name) = [$($_.Value)]"
+      }
+      $anchor | Format-List EventTime, Username, IPAddress, Location, Application, Status, ConditionalAccess, MfaResult, RequestId
+
     # --- ANCHOR_DEVICE ---
     Write-Host "`n=== ANCHOR_DEVICE ==="
     # Debug properties
@@ -596,6 +603,9 @@ if ($anchor) {
     elseif ($anchor.Username) {
         $truncatedUser = $anchor.Username
     }
+    Write-Host "`nDEBUG: Lansweeper Pivot"
+    Write-Host "  - Raw Username: [$($anchor.Username)]"
+    Write-Host "  - Truncated:    [$truncatedUser]"
     $lsUserUrl = "https://mxpcorls01:82/user.aspx?username=$truncatedUser&userdomain=MAXOR"
 
     $ipVal = $anchor.IPAddress
