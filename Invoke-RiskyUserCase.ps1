@@ -11,6 +11,7 @@ param(
 
 # =========================
 # Risky User Bot - SOC Triage
+# Restoration: Jan 19 6:30 PM Baseline
 # =========================
 
 # 1. Load Local Environment (.env)
@@ -29,23 +30,18 @@ $LS_URL        = if ($env:LANSWEEPER_URL) { $env:LANSWEEPER_URL } else { "https:
 $LS_DOMAIN     = if ($env:LANSWEEPER_DOMAIN) { $env:LANSWEEPER_DOMAIN } else { "MAXOR" }
 $CS_BASE       = if ($env:CROWDSTRIKE_BASE_URL) { $env:CROWDSTRIKE_BASE_URL } else { "https://falcon.us-2.crowdstrike.com" }
 
-# Column Aliases
-$script:ColumnAliases = @{
-    "DeviceId"        = @("Device ID", "DeviceId")
-    "OperatingSystem" = @("Operating System", "OS", "OperatingSystem")
-    "Browser"         = @("Browser")
-    "ClientApp"       = @("Client app", "ClientApp")
-    "JoinType"        = @("Join Type", "JoinType")
-    "Compliant"       = @("Compliant")
-    "Managed"         = @("Managed")
-    "UserAgent"       = @("User agent", "UserAgent", "User-Agent")
-    "City"            = @("City")
-    "State"           = @("State", "State/Province")
-    "Country"         = @("Country", "Country/Region")
+function Fail {
+    param([string] $Message)
+    Write-Host "ERROR: $Message"
+    exit 1
 }
 
 function Get-FieldValue {
-    param($Row, [string[]]$Aliases, $Default = "Unknown")
+    param(
+        [Parameter(Mandatory=$false)] $Row,
+        [Parameter(Mandatory=$true)] [string[]] $Aliases,
+        $Default = "Unknown"
+    )
     if ($null -eq $Row) { return $Default }
     
     $props = @()
@@ -56,10 +52,9 @@ function Get-FieldValue {
     }
 
     foreach ($alias in $Aliases) {
+        $normAlias = ($alias -replace '[^a-zA-Z0-9]', '').ToLower()
         foreach ($p in $props) {
-            # Normalize: Remove spaces and non-alphanumeric for matching
             $normP = ($p -replace '[^a-zA-Z0-9]', '').ToLower()
-            $normAlias = ($alias -replace '[^a-zA-Z0-9]', '').ToLower()
             if ($p -ieq $alias -or $normP -eq $normAlias) {
                 $val = if ($Row.PSObject) { $Row.$p } else { $Row[$p] }
                 if ($null -ne $val -and -not [string]::IsNullOrWhiteSpace($val.ToString())) {
@@ -68,7 +63,6 @@ function Get-FieldValue {
             }
         }
     }
-    
     return $Default
 }
 
@@ -138,7 +132,7 @@ function Get-RiskScore {
     param($Anchor, $IsNewIP, $IsNewDevice, $AnchorDevice)
     $score = 0
     if ($IsNewIP) { $score += 30 }
-    if ($IsNewDevice) { $score += 30 }
+    if ($isNewDevice) { $score += 30 }
     $ua = if ($AnchorDevice.UserAgent) { $AnchorDevice.UserAgent.ToString() } else { "" }
     if ($ua -ne "Unknown" -and $ua -notmatch "Mozilla/") { $score += 50 }
     if ($Anchor.Status -eq "Interrupted") { $score += 20 }
@@ -178,17 +172,14 @@ function Build-TicketStory {
 function Get-ScopeButtons {
     param($BaseUrl, $ToolType, $TimeObj)
     $scopes = @(
+        @{ Label = "1m";  Offset = 30 }
         @{ Label = "5m";  Offset = 150 }
         @{ Label = "1h";  Offset = 1800 }
         @{ Label = "24h"; Offset = 43200 }
         @{ Label = "7d";  Offset = 302400 }
         @{ Label = "30d"; Offset = 1296000 }
     )
-    $start1m = ([datetimeoffset]::new($TimeObj.AddSeconds(-30))).ToUnixTimeMilliseconds()
-    $end1m   = ([datetimeoffset]::new($TimeObj.AddSeconds(30))).ToUnixTimeMilliseconds()
-    $pUrl = if ($ToolType -eq "CS") { $BaseUrl + "&start=$start1m&end=$end1m" } else { $BaseUrl + "&from=$start1m&to=$end1m" }
-    $html = "<a href='$pUrl' target='_blank' class='primary-pivot-btn' id='primary-$($ToolType.ToLower())-pivot' data-time-params='$(if($ToolType -eq "CS"){"&start=$start1m&end=$end1m"}else{"&from=$start1m&to=$end1m"})'>PIVOT TO EXACT MINUTE</a>"
-    $html += "<div class='scope-group'>"
+    $html = "<div class='scope-group'>"
     foreach ($s in $scopes) {
         $st = ([datetimeoffset]::new($TimeObj.AddSeconds(-$s.Offset))).ToUnixTimeMilliseconds()
         $en = ([datetimeoffset]::new($TimeObj.AddSeconds($s.Offset))).ToUnixTimeMilliseconds()
@@ -198,177 +189,19 @@ function Get-ScopeButtons {
     return $html + "</div>"
 }
 
-function Write-Report {
-    param($Status, $Anchor, $AnchorDevice, $UtcTime, $EstTime, $CstTime, $Decision, $RiskScore, $UniqueFlaws, $IsNewIP, $IsNewLocation, $IsNewApp, $MatrixRows, $Set24h, $Set7d, $Set30d, $CaseFolder, $Rapid7OrgId, $Rapid7LogList, $EncodedIP, $PpUser, $PpSince, $PpUntil, $lsUserUrl, $CsBaseUrl, $ReportFileName, $PrefixInfo)
-    
-    $statusBadgeClass = if($anchor.Status -match 'Success') { 'badge-success' } else { 'badge-fail' }
-    $reportPath = Join-Path $CaseFolder $ReportFileName
-
-    $html = @"
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <title>SOC Report [$Status] - $($anchor.RequestId)</title>
-    <style>
-        :root { --bg: #0d1117; --card-bg: #161b22; --border: #30363d; --text-primary: #f0f6fc; --text-secondary: #8b949e; --blue: #58a6ff; --green: #3fb950; --red: #f85149; --orange: #d29922; }
-        body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--bg); color: var(--text-primary); margin: 0; padding: 20px; }
-        .container { max-width: 1200px; margin: auto; }
-        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 20px; }
-        .badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; text-transform: uppercase; border: 1px solid transparent; }
-        .badge-success { background: rgba(63, 185, 80, 0.15); color: var(--green); border-color: var(--green); }
-        .badge-fail { background: rgba(248, 81, 73, 0.15); color: var(--red); border-color: var(--red); }
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 20px; }
-        .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-        .label { color: var(--text-secondary); font-size: 11px; text-transform: uppercase; font-weight: 600; display: block; margin-bottom: 6px; }
-        .value { font-size: 14px; font-weight: 500; font-family: monospace; }
-        .section-title { font-size: 14px; color: var(--blue); margin: 24px 0 12px 0; border-left: 4px solid var(--blue); padding-left: 10px; font-weight: 600; }
-        .decision-banner { background: var(--card-bg); border: 2px solid var(--blue); border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 20px; }
-        .decision-value { font-size: 32px; font-weight: 800; color: var(--blue); text-transform: uppercase; }
-        .scope-group { display: flex; gap: 4px; margin-top: 8px; }
-        .scope-btn { background: #21262d; color: #8b949e; border: 1px solid var(--border); padding: 2px 8px; border-radius: 4px; font-size: 10px; text-decoration: none; }
-        .primary-pivot-btn { background: var(--blue); color: white; padding: 8px 15px; border-radius: 4px; font-weight: bold; display: block; text-align: center; text-decoration: none; font-size: 12px; }
-        .primary-pivot-btn:hover { filter: brightness(1.2); box-shadow: 0 0 10px rgba(88, 166, 255, 0.4); }
-        .comparison-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
-        .comparison-table th { background: #21262d; color: var(--blue); text-align: left; padding: 12px; font-size: 11px; }
-        .comparison-table td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 13px; }
-        .anchor-row-highlight { background: rgba(88, 166, 255, 0.1) !important; border-left: 4px solid var(--blue); }
-        .flaw-item { color: var(--orange); font-family: monospace; font-size: 13px; margin-bottom: 4px; }
-        .story-box { background: #0d1117; border-left: 4px solid var(--blue); padding: 16px; font-style: italic; color: var(--text-secondary); line-height: 1.5; }
-    </style>
-    <script>
-        function copy(text) { navigator.clipboard.writeText(text); alert('Copied: ' + text); }
-        function updateDynamicPivots(n) {
-            if(!n) return;
-            const b = "$CsBaseUrl/investigate/search?repo=all&query=" + encodeURIComponent(n.toUpperCase() + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])");
-            document.querySelectorAll('.cs-scope-btn').forEach(btn => { btn.href = b + btn.getAttribute('data-time-params'); });
-            const p = document.getElementById('primary-cs-pivot');
-            if(p) p.href = b + p.getAttribute('data-time-params');
-            document.getElementById('cs-host-details').href = "$CsBaseUrl/host-management/hosts?filter=hostname%3A%27" + n.toUpperCase() + "%27";
-            document.getElementById('current-target-display').innerText = n.toUpperCase();
-        }
-    </script>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>Risky User Analysis [$Status]</h1>
-            <div class="badge $statusBadgeClass">$($anchor.Status)</div>
-        </div>
-        <div class="decision-banner">
-            <div class="label">Primary Decision (Risk Score: $RiskScore)</div>
-            <div class="decision-value">$($Decision.ToUpper())</div>
-        </div>
-        <div class="section-title">TIME CONVERSIONS</div>
-        <div class="grid">
-            <div class="card">
-                <span class="label">UTC</span>
-                <span class="value">$(if($UtcTime){$UtcTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span>
-                <div style="font-size:10px; color:var(--text-secondary); margin-top:4px;">Primary event timestamp</div>
-            </div>
-            <div class="card">
-                <span class="label">EST (Eastern)</span>
-                <span class="value">$(if($EstTime){$EstTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span>
-                <div style="font-size:10px; color:var(--text-secondary); margin-top:4px;">NYC/Miami/DC Local Time</div>
-            </div>
-            <div class="card">
-                <span class="label">CST (Central)</span>
-                <span class="value">$(if($CstTime){$CstTime.ToString("yyyy-MM-dd HH:mm:ss")}else{"Unknown"})</span>
-                <div style="font-size:10px; color:var(--text-secondary); margin-top:4px;">Chicago/Dallas Local Time</div>
-            </div>
-        </div>
-        <div class="section-title">IDENTITY & NETWORK</div>
-        <div class="grid">
-            <div class="card">
-                <span class="label">User</span><span class="value">$($anchor.Username)</span>
-                <div style="margin-top:8px;">
-                    <a href="https://portal.azure.com/#view/Microsoft_AAD_IAM/UserDetailsMenuBlade/~/overview/userId/$($anchor.Username)" target="_blank" style="color:var(--blue); font-size:11px; text-decoration:none;">Entra Profile</a>
-                </div>
-            </div>
-            <div class="card">
-                <span class="label">IP Address</span><span class="value">$($anchor.IPAddress)</span>
-                $PrefixInfo
-                <div style="margin-top:8px;">
-                    <a href="https://www.virustotal.com/gui/ip-address/$($anchor.IPAddress)" target="_blank" style="color:var(--blue); font-size:11px; text-decoration:none; margin-right:10px;">VirusTotal</a>
-                    <a href="https://bgp.he.net/ip/$($anchor.IPAddress)" target="_blank" style="color:var(--orange); font-size:11px; text-decoration:none;">ASN Lookup</a>
-                </div>
-            </div>
-            <div class="card"><span class="label">Geo Detail</span><span class="value">$($anchor.City), $($anchor.State), $($anchor.Country)</span></div>
-            <div class="card"><span class="label">Application</span><span class="value">$($anchor.Application)</span></div>
-        </div>
-        
-        <div class="section-title">SOC TOOLBOX</div>
-        <div class="card" style="border: 1px dashed var(--blue); margin-bottom: 15px;">
-            <span class="label">Manual Host Override (from Lansweeper)</span>
-            <input type="text" id="host-override" onchange="updateDynamicPivots(this.value)" style="width:100%; background:#0d1117; color:white; border:1px solid var(--border); padding:8px;">
-            <div style="font-size:10px; margin-top:5px;">Active: <span id="current-target-display">$($AnchorDevice.DeviceId)</span></div>
-        </div>
-        <div class="grid">
-            <div class="card">
-                <span class="label">CrowdStrike EDR</span>
-                $(Get-ScopeButtons -BaseUrl ("$CsBaseUrl/investigate/search?repo=all&query=" + [uri]::EscapeDataString($AnchorDevice.DeviceId.ToUpper() + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])")) -ToolType "CS" -TimeObj $UtcTime)
-                <a href="$CsBaseUrl/host-management/hosts?filter=hostname%3A%27$($AnchorDevice.DeviceId.ToUpper())%27" id="cs-host-details" target="_blank" style="background:rgba(88, 166, 255, 0.1); color:var(--blue); border:1px solid var(--blue); padding:8px 15px; border-radius:4px; font-weight:bold; display:block; text-align:center; text-decoration:none; font-size:11px; margin-top:10px;">VIEW HOST DETAILS</a>
-            </div>
-            <div class="card">
-                <span class="label">Proofpoint Search</span>
-                <div style="display:flex; flex-direction:column; gap:8px; margin-top:10px;">
-                    <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$PpUser&since=$PpSince&until=$PpUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; padding:8px 15px; border-radius:4px; text-align:center; text-decoration:none; font-weight:bold;">Email (3D Lookback)</a>
-                    <a href="https://us.threatresponse.proofpoint.com/incidents?search=$PpUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:8px 15px; border-radius:4px; text-align:center; text-decoration:none; font-weight:bold;">TRAP Incidents</a>
-                </div>
-            </div>
-            <div class="card">
-                <span class="label">Lansweeper User</span>
-                <a href="$lsUserUrl" target="_blank" style="background:var(--green); color:white; padding:8px 15px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold;">View User Profile</a>
-            </div>
-            <div class="card span-2">
-                <span class="label">Rapid7 Logs</span>
-                $(Get-ScopeButtons -BaseUrl "https://us.idr.insight.rapid7.com/op/$Rapid7OrgId#/search?logs=$Rapid7LogList&query=where($EncodedIP)" -ToolType "R7" -TimeObj $UtcTime)
-            </div>
-        </div>
-
-        <div class="section-title">STATISTICAL BASELINE</div>
-        $(if($Status -eq "FINAL"){
-            @"
-        <table class="comparison-table">
-            <thead><tr><th>Attribute</th><th>Value</th><th>Last Seen</th><th>24h</th><th>7d</th><th>30d</th></tr></thead>
-            <tbody>
-                <tr><td>Device ID</td><td>$($AnchorDevice.DeviceId)</td><td>$(Get-LastSeen -Value $AnchorDevice.DeviceId -Aliases $script:ColumnAliases['DeviceId'] -Datasets @($Set24h, $Set7d, $Set30d))</td><td>$(Get-Frequency -Value $AnchorDevice.DeviceId -Aliases $script:ColumnAliases['DeviceId'] -Datasets @($Set24h))</td><td>$(Get-Frequency -Value $AnchorDevice.DeviceId -Aliases $script:ColumnAliases['DeviceId'] -Datasets @($Set7d))</td><td>$(Get-Frequency -Value $AnchorDevice.DeviceId -Aliases $script:ColumnAliases['DeviceId'] -Datasets @($Set30d))</td></tr>
-                <tr><td>IP Address</td><td>$($anchor.IPAddress)</td><td>$(Get-LastSeen -Value $anchor.IPAddress -Aliases @('IP address') -Datasets @($Set24h, $Set7d, $Set30d))</td><td>$(Get-Frequency -Value $anchor.IPAddress -Aliases @('IP address') -Datasets @($Set24h))</td><td>$(Get-Frequency -Value $anchor.IPAddress -Aliases @('IP address') -Datasets @($Set7d))</td><td>$(Get-Frequency -Value $anchor.IPAddress -Aliases @('IP address') -Datasets @($Set30d))</td></tr>
-                <tr><td>Location</td><td>$($anchor.Location)</td><td>$(Get-LastSeen -Value $anchor.Location -Aliases @('Location') -Datasets @($Set24h, $Set7d, $Set30d))</td><td>$(Get-Frequency -Value $anchor.Location -Aliases @('Location') -Datasets @($Set24h))</td><td>$(Get-Frequency -Value $anchor.Location -Aliases @('Location') -Datasets @($Set7d))</td><td>$(Get-Frequency -Value $anchor.Location -Aliases @('Location') -Datasets @($Set30d))</td></tr>
-                <tr><td>User Agent</td><td style="font-size:10px;">$($AnchorDevice.UserAgent)</td><td>$(Get-LastSeen -Value $AnchorDevice.UserAgent -Aliases $script:ColumnAliases['UserAgent'] -Datasets @($Set24h, $Set7d, $Set30d))</td><td>$(Get-Frequency -Value $AnchorDevice.UserAgent -Aliases $script:ColumnAliases['UserAgent'] -Datasets @($Set24h))</td><td>$(Get-Frequency -Value $AnchorDevice.UserAgent -Aliases $script:ColumnAliases['UserAgent'] -Datasets @($Set7d))</td><td>$(Get-Frequency -Value $AnchorDevice.UserAgent -Aliases $script:ColumnAliases['UserAgent'] -Datasets @($Set30d))</td></tr>
-            </tbody>
-        </table>
-"@
-        }else{
-            "<div class='card' style='text-align:center; padding:40px; color:var(--orange); font-weight:bold;'>ANALYSIS IN PROGRESS... REFRESH IN 10S</div>"
-        })
-
-        $(if($Status -eq "FINAL" -and $MatrixRows){
-            @"
-        <div class="section-title">DEVICE CORRELATION MATRIX (30D)</div>
-        <table class="comparison-table">
-            <thead><tr><th>Device ID</th><th>IPs</th><th>OS/Browser</th><th>Posture</th><th>30d Freq</th></tr></thead>
-            <tbody>$($MatrixRows -join "")</tbody>
-        </table>
-"@
-        })
-
-        <div class="section-title">INVESTIGATION STORY</div>
-        <div class="story-box">
-            $(Build-TicketStory -Anchor $anchor -DecisionBucket $Decision -IsNewIP $IsNewIP -IsNewLocation $IsNewLocation -IsNewApp $IsNewApp)
-        </div>
-
-        <div class="section-title">🧠 ANALYST NOTES: IPV6 TRIAGE</div>
-        <div class="story-box" style="border-left-color: var(--orange);">
-            <p><strong>Why /64 matters:</strong> IPv6 addresses are vast. Attackers often rotate the last 64 bits (Interface ID) to bypass single-IP blocks. The first 64 bits (Prefix) usually identify the specific network or residential household.</p>
-            <p><strong>SOC Action:</strong> If you see multiple failures from the same /64 prefix (even with different full IPs), you are likely dealing with a single automated script or actor. <strong>Consider blocking the entire /64 range</strong> instead of the individual address.</p>
-        </div>
-    </div>
-</body>
-</html>
-"@
-    $html | Out-File $reportPath -Encoding utf8
-    Write-Host "HTML Report generated: $reportPath"
+# Column Aliases
+$script:ColumnAliases = @{
+    "DeviceId"        = @("Device ID", "DeviceId")
+    "OperatingSystem" = @("Operating System", "OS", "OperatingSystem")
+    "Browser"         = @("Browser")
+    "ClientApp"       = @("Client app", "ClientApp")
+    "JoinType"        = @("Join Type", "JoinType")
+    "Compliant"       = @("Compliant")
+    "Managed"         = @("Managed")
+    "UserAgent"       = @("User agent", "UserAgent", "User-Agent")
+    "City"            = @("City")
+    "State"           = @("State", "State/Province")
+    "Country"         = @("Country", "Country/Region")
 }
 
 # --- START EXECUTION ---
@@ -376,17 +209,19 @@ Write-Host "`n=== DIAGNOSTICS ==="
 $files = Get-ChildItem -Path $CaseFolder -Filter "*.csv"
 if ($files.Count -eq 0) { Write-Host "No CSV files found in $CaseFolder"; exit }
 
-$data = @{ "raw" = @{} }
+$data = @{}
 $flatEvents = New-Object System.Collections.Generic.List[pscustomobject]
 
-foreach ($f in $files) {
-    Write-Host "Loading: $($f.Name)..." -NoNewline
+foreach ($file in $files) {
+    Write-Host "Loading: $($file.Name)... " -NoNewline
     try {
-        $raw = try { Import-Csv $f.FullName -ErrorAction Stop } catch {
-            $c = Get-Content $f.FullName; $hRow = ($c[0] -split ",").Trim(); $seen = @{}; 
+        # Robust Import-Csv handling duplicate headers
+        $raw = try { Import-Csv $file.FullName -ErrorAction Stop } catch {
+            $c = Get-Content $file.FullName; $hRow = ($c[0] -split ",").Trim(); $seen = @{}; 
             $sh = foreach($col in $hRow){ $n=if(!$col){"Blank"}else{$col}; if($seen.ContainsKey($n)){$seen[$n]++; "$n`_$($seen[$n])"}else{$seen[$n]=1;$n} }
             $c | Select-Object -Skip 1 | ConvertFrom-Csv -Header $sh
         }
+        
         $norm = New-Object System.Collections.Generic.List[pscustomobject]
         foreach($r in $raw){
             $dt = Parse-EventTime (Get-Value -Row $r -ColumnName "Date")
@@ -399,9 +234,9 @@ foreach ($f in $files) {
             $r | Add-Member -MemberType NoteProperty -Name "ConditionalAccess" -Value (Get-FieldValue -Row $r -Aliases @("Conditional Access")) -Force
             $norm.Add($r); $flatEvents.Add($r)
         }
-        $data["raw"][$f.Name] = $norm
-        Write-Host " OK"
-    } catch { Write-Host " FAILED" }
+        $data[$file.Name] = $norm
+        Write-Host "OK ($($norm.Count) rows)"
+    } catch { Write-Host "FAILED: $($_.Exception.Message)" }
 }
 
 # Anchor Selection
@@ -412,7 +247,7 @@ if($AnchorRequestId){
 }
 
 if($anchor){
-    Write-Host "Found anchor for ID: $AnchorRequestId"
+    Write-Host "Found anchor: $($anchor.RequestId)"
     
     $AnchorDevice = [pscustomobject]@{
         DeviceId = (Get-FieldValue -Row $anchor -Aliases $script:ColumnAliases["DeviceId"]).ToUpper()
@@ -429,14 +264,20 @@ if($anchor){
     $estTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Eastern Standard Time"))
     $cstTime = [TimeZoneInfo]::ConvertTimeFromUtc($utcTime, [TimeZoneInfo]::FindSystemTimeZoneById("Central Standard Time"))
     
+    # Tool Config
     $encodedIP = [uri]::EscapeDataString($anchor.IPAddress)
     $trunc = "Unknown"; if($anchor.Username -and $anchor.Username -match "@"){$trunc = $anchor.Username.Split('@')[0]}elseif($anchor.Username){$trunc=$anchor.Username}
     $lsUserUrl = "$LS_URL/user.aspx?username=$trunc&userdomain=$LS_DOMAIN"
     
-    # Filename
+    $ppUser = [uri]::EscapeDataString($anchor.Username)
+    $ppSince = $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    $ppUntil = $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+    # Filename Logic
     $ts = (Get-Date).ToString("yyyyddMM-hhmmssfff tt")
     $targetLabel = if($AnchorDevice.DeviceId -ne "Unknown") { $AnchorDevice.DeviceId } else { $trunc }
     $reportFileName = "$ts EST RiskyUserAlert $($targetLabel) report.html"
+    $reportPath = Join-Path $CaseFolder $reportFileName
 
     # IPv6 Prefix
     $ipVal = $anchor.IPAddress; $prefixInfo = ""; if ($ipVal -match ':') {
@@ -445,16 +286,11 @@ if($anchor){
         }
     }
 
-    # Phase 1: INITIAL Report
-    Write-Host "`nGenerating Initial Report (Pivots Only)..."
-    Write-Report -Status "INITIAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision "PENDING" -RiskScore 0 -UniqueFlaws @() -IsNewIP $false -IsNewLocation $false -IsNewApp $false -MatrixRows @() -Set24h @() -Set7d @() -Set30d @() -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ReportFileName $reportFileName -PrefixInfo $prefixInfo -ColumnAliases $script:ColumnAliases
-
-    # Phase 2: FULL Analysis
+    # Advanced Analysis
     Write-Host "Processing Baseline Metrics..."
-    $now = Get-Date
-    $set24h = $flatEvents | Where-Object { $_.EventTime -ge $now.AddHours(-24) }
-    $set7d  = $flatEvents | Where-Object { $_.EventTime -ge $now.AddDays(-7) }
-    $set30d = $flatEvents | Where-Object { $_.EventTime -ge $now.AddDays(-30) }
+    $set24h = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddHours(-24) }
+    $set7d  = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-7) }
+    $set30d = $flatEvents | Where-Object { $_.EventTime -ge (Get-Date).AddDays(-30) }
     
     $isNewIP = Test-IsNewValue -BaselineEvents $set30d -Aliases @("IP address") -Value $anchor.IPAddress
     $isNewDevice = Test-IsNewValue -BaselineEvents $set30d -Aliases $script:ColumnAliases["DeviceId"] -Value $AnchorDevice.DeviceId
@@ -464,15 +300,141 @@ if($anchor){
         $dId = $g.Name.ToUpper(); $evs = $g.Group
         $ips = $evs.IPAddress | Select-Object -Unique
         $rowStyle = if($dId -eq $AnchorDevice.DeviceId){"class='anchor-row-highlight'"}else{""}
-        "<tr $rowStyle><td>$dId</td><td>$($ips -join ',')</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['OperatingSystem'])</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Compliant'])</td><td>$($evs.Count)</td></tr>"
+        "<tr $rowStyle><td>$dId</td><td>$($ips -join ',')</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['OperatingSystem']) / $(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Browser'])</td><td>$(Get-FieldValue -Row $evs[0] -Aliases $script:ColumnAliases['Compliant'])</td><td>$($evs.Count)</td><td>$(($evs | Sort-Object EventTime -Descending | Select-Object -First 1).EventTime.ToString('yyyy-MM-dd HH:mm'))</td></tr>"
     }
     
     $riskScore = Get-RiskScore -Anchor $anchor -IsNewIP $isNewIP -IsNewDevice $isNewDevice -AnchorDevice $AnchorDevice
     $decision = Get-DecisionBucket -Anchor $anchor -Score $riskScore
 
-    # Final Phase 3 Update
-    Write-Host "Finalizing Full Report..."
-    Write-Report -Status "FINAL" -Anchor $anchor -AnchorDevice $AnchorDevice -UtcTime $utcTime -EstTime $estTime -CstTime $cstTime -Decision $decision -RiskScore $riskScore -UniqueFlaws @() -IsNewIP $isNewIP -IsNewLocation $false -IsNewApp $false -MatrixRows $matrixRows -Set24h $set24h -Set7d $set7d -Set30d $set30d -CaseFolder $CaseFolder -Rapid7OrgId $RAPID7_ORG_ID -Rapid7LogList $RAPID7_LOGS -EncodedIP $encodedIP -PpUser ([uri]::EscapeDataString($anchor.Username)) -PpSince $utcTime.AddDays(-3).ToString("yyyy-MM-ddTHH:mm:ssZ") -PpUntil $utcTime.ToString("yyyy-MM-ddTHH:mm:ssZ") -lsUserUrl $lsUrl -CsBaseUrl $CS_BASE -ReportFileName $reportFileName -PrefixInfo $prefixInfo -ColumnAliases $script:ColumnAliases
-}
-Write-Host "`nDONE"
+    # HTML REPORT
+    $html = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SOC Dashboard - $($anchor.RequestId)</title>
+    <style>
+        :root { --bg: #0d1117; --card-bg: #161b22; --border: #30363d; --text-primary: #f0f6fc; --text-secondary: #8b949e; --blue: #58a6ff; --green: #3fb950; --red: #f85149; --orange: #d29922; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background-color: var(--bg); color: var(--text-primary); margin: 0; padding: 20px; font-size: 13px; }
+        .container { max-width: 1400px; margin: auto; }
+        .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 20px; margin-bottom: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+        .label { color: var(--text-secondary); font-size: 10px; text-transform: uppercase; font-weight: 600; display: block; margin-bottom: 6px; }
+        .value { font-size: 14px; font-weight: 500; font-family: 'Cascadia Code', monospace; word-break: break-all; }
+        .section-title { font-size: 14px; color: var(--blue); margin: 24px 0 12px 0; border-left: 4px solid var(--blue); padding-left: 10px; font-weight: 600; }
+        .decision-banner { background: var(--card-bg); border: 2px solid var(--blue); border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 20px; }
+        .decision-value { font-size: 32px; font-weight: 800; color: var(--blue); text-transform: uppercase; }
+        .scope-group { display: flex; gap: 4px; margin-top: 8px; flex-wrap: wrap; }
+        .scope-btn { background: #21262d; color: #8b949e; border: 1px solid var(--border); padding: 4px 10px; border-radius: 4px; font-size: 11px; text-decoration: none; font-weight: bold; }
+        .scope-btn:hover { background: var(--blue); color: white; }
+        .primary-pivot-btn { background: var(--blue); color: white; padding: 10px 20px; border-radius: 4px; font-weight: bold; display: block; text-align: center; text-decoration: none; margin-bottom: 10px; }
+        .comparison-table { width: 100%; border-collapse: collapse; background: var(--card-bg); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-bottom: 20px; }
+        .comparison-table th { background: #21262d; color: var(--blue); text-align: left; padding: 12px; font-size: 11px; }
+        .comparison-table td { padding: 12px; border-bottom: 1px solid var(--border); }
+        .anchor-row-highlight { background: rgba(88, 166, 255, 0.1) !important; border-left: 4px solid var(--blue); }
+    </style>
+    <script>
+        function copy(t) { navigator.clipboard.writeText(t); alert('Copied: ' + t); }
+        function updateDynamicPivots(n) {
+            if(!n) return;
+            const u = n.toUpperCase();
+            const q = encodeURIComponent(u + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])");
+            const b = "$CS_BASE/investigate/search?repo=all&query=" + q;
+            document.querySelectorAll('.cs-scope-btn').forEach(btn => { btn.href = b + btn.getAttribute('data-time-params'); });
+            document.getElementById('primary-cs-pivot').href = b + document.getElementById('primary-cs-pivot').getAttribute('data-time-params');
+            document.getElementById('cs-host-details').href = "$CS_BASE/host-management/hosts?filter=hostname%3A%27" + u + "%27";
+            document.getElementById('current-target-display').innerText = u;
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Risky User Analysis [FINAL]</h1>
+            <div style="font-family: monospace; color: var(--text-secondary)">ID: $($anchor.RequestId)</div>
+        </div>
+
+        <div class="decision-banner">
+            <div class="label">Behavioral Risk Score: $riskScore</div>
+            <div class="decision-value">$($decision.ToUpper())</div>
+        </div>
+
+        <div class="section-title">TIME CORRELATION (UTC / EST / CST)</div>
+        <div class="grid">
+            <div class="card"><span class="label">UTC</span><span class="value">$($utcTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+            <div class="card"><span class="label">EST</span><span class="value">$($estTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+            <div class="card"><span class="label">CST</span><span class="value">$($cstTime.ToString("yyyy-MM-dd HH:mm:ss"))</span></div>
+        </div>
+
+        <div class="section-title">IDENTITY & NETWORK ORIGIN</div>
+        <div class="grid">
+            <div class="card">
+                <span class="label">User</span><span class="value">$($anchor.Username)</span>
+                <a href="https://portal.azure.com/#view/Microsoft_AAD_IAM/UserDetailsMenuBlade/~/overview/userId/$($anchor.Username)" target="_blank" style="color:var(--blue); font-size:11px;">Entra Profile</a>
+            </div>
+            <div class="card">
+                <span class="label">IP Address</span><span class="value">$($anchor.IPAddress)</span>
+                $prefixInfo
+                <div style="margin-top:8px; display:flex; gap:10px;">
+                    <a href="https://www.virustotal.com/gui/ip-address/$($anchor.IPAddress)" target="_blank" style="color:var(--blue); font-size:11px;">VirusTotal</a>
+                    <a href="https://bgp.he.net/ip/$($anchor.IPAddress)" target="_blank" style="color:var(--orange); font-size:11px;">BGP Lookup</a>
+                </div>
+            </div>
+            <div class="card"><span class="label">Geolocation</span><span class="value">$($anchor.City), $($anchor.State), $($anchor.Country)</span></div>
+            <div class="card"><span class="label">Application</span><span class="value">$($anchor.Application)</span></div>
+        </div>
+
+        <div class="section-title">SOC TOOLBOX (ONE-CLICK PIVOTS)</div>
+        <div class="card" style="border: 1px dashed var(--blue); margin-bottom: 15px;">
+            <span class="label">Manual Host Override (from Lansweeper)</span>
+            <input type="text" placeholder="Paste computer name..." onchange="updateDynamicPivots(this.value)" style="width:100%; background:#0d1117; color:white; border:1px solid var(--border); padding:8px; border-radius:4px;">
+            <div style="font-size:10px; margin-top:5px; color:var(--text-secondary)">Active Pivot: <span id="current-target-display" style="color:var(--blue)">$($AnchorDevice.DeviceId)</span></div>
+        </div>
+        <div class="grid">
+            <div class="card">
+                <span class="label">CrowdStrike EDR</span>
+                $(
+                    $q = [uri]::EscapeDataString($AnchorDevice.DeviceId.ToUpper() + " | table([@timestamp, ComputerName, UserName, LocalAddressIP, LocalPort, RemoteIP, DomainName, RemotePort, event_simpleName, ImageFileName, CommandLine])")
+                    Get-ScopeButtons -BaseUrl "$CS_BASE/investigate/search?repo=all&query=$q" -ToolType "CS" -TimeObj $utcTime
+                )
+                <a href="$CS_BASE/host-management/hosts?filter=hostname%3A%27$($AnchorDevice.DeviceId.ToUpper())%27" id="cs-host-details" target="_blank" style="background:rgba(88, 166, 255, 0.1); color:var(--blue); border:1px solid var(--blue); padding:8px; border-radius:4px; display:block; text-align:center; text-decoration:none; margin-top:10px; font-weight:bold;">VIEW HOST DETAILS</a>
+            </div>
+            <div class="card">
+                <span class="label">Proofpoint Search</span>
+                <a href="https://admin.proofpoint.com/smartSearchPage?recipient=$ppUser&since=$ppSince&until=$ppUntil&sort=receivedAt&order=asc" target="_blank" style="background:var(--orange); color:white; padding:10px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold; margin-bottom:8px;">Email (3D Lookback)</a>
+                <a href="https://us.threatresponse.proofpoint.com/incidents?search=$ppUser" target="_blank" style="background:rgba(210, 153, 34, 0.2); color:var(--orange); border:1px solid var(--orange); padding:10px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold;">TRAP Incidents</a>
+            </div>
+            <div class="card">
+                <span class="label">Lansweeper User</span>
+                <a href="$lsUserUrl" target="_blank" style="background:var(--green); color:white; padding:10px; border-radius:4px; display:block; text-align:center; text-decoration:none; font-weight:bold;">View User Profile</a>
+            </div>
+            <div class="card">
+                <span class="label">Rapid7 Logs</span>
+                $(Get-ScopeButtons -BaseUrl "https://us.idr.insight.rapid7.com/op/$RAPID7_ORG_ID#/search?logs=$RAPID7_LOGS&query=where($encodedIP)" -ToolType "R7" -TimeObj $utcTime)
+            </div>
+        </div>
+
+        <div class="section-title">STATISTICAL BASELINE (SIDE-BY-SIDE)</div>
+        <table class="comparison-table">
+            <thead><tr><th>Attribute</th><th>Value</th><th>Last Seen</th><th>24h</th><th>7d</th><th>30d</th></tr></thead>
+            <tbody>
+                <tr><td>Device ID</td><td>$($AnchorDevice.DeviceId)</td><td>$(Get-LastSeen $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $set30d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $set24h)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $set7d)</td><td>$(Get-Frequency $AnchorDevice.DeviceId $script:ColumnAliases['DeviceId'] $set30d)</td></tr>
+                <tr><td>IP Address</td><td>$($anchor.IPAddress)</td><td>$(Get-LastSeen $anchor.IPAddress @('IP address') $set30d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $set24h)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $set7d)</td><td>$(Get-Frequency $anchor.IPAddress @('IP address') $set30d)</td></tr>
+            </tbody>
+        </table>
+
+        <div class="section-title">DEVICE CORRELATION MATRIX (30D)</div>
+        <table class="comparison-table">
+            <thead><tr><th>Device ID</th><th>IPs</th><th>OS / Browser</th><th>Posture</th><th>30d Seen</th><th>Last Seen</th></tr></thead>
+            <tbody>$($matrixRows -join "")</tbody>
+        </table>
+    </div>
+</body>
+</html>
+"@
+    $html | Out-File $reportPath -Encoding utf8
+    Write-Host "`nHTML Report generated at: $reportPath"
+} else { Write-Host "No anchor found for ID: $AnchorRequestId" }
+
 Write-Host "REGRESSION_CHECK: OK"
